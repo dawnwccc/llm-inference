@@ -5,7 +5,7 @@ import shortuuid
 from abc import abstractmethod
 import httpx
 from typing import List
-from adapter import load_model
+from .utils.adapter import load_model
 import torch
 import uvicorn
 from fastapi import FastAPI
@@ -13,14 +13,13 @@ from datetime import datetime
 from utils import Logger
 from config import ServerConfig
 from apscheduler.schedulers.background import BackgroundScheduler
-from protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, CompletionRequest, \
+from entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, CompletionRequest, \
     BaseResponse, CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo, ChatCompletionResponse, \
     CompletionResponse, ChatCompletionChoiceResponse, ChatCompletionRequest, ChatMessage
 from utils.factory import GlobalFactory
 from utils.enums import ModelFunctionEnum
 from models.base_model import AbstractModelFunction
 # init
-import inference
 from utils import chat_template
 
 
