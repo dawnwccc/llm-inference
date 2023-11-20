@@ -1,3 +1,6 @@
+import os
+
+
 class ServerConfig:
     """配置类"""
     SERVER_CENTER_URL = "127.0.0.1"
@@ -12,7 +15,8 @@ class ServerConfig:
     # 最大心跳失败次数
     MAX_HEARTBEAT_FAILURES = 3
 
-    HUGGINGFACE_HUB_TOKEN = "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"
+    # HUGGINGFACE_HUB_TOKEN = "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"
+    HUGGINGFACE_HUB_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN")
 
     # Load模型时的默认访问地址
     # MODEL_CACHED_PATH = "/home/wangchen/llm/customllm/models/"
