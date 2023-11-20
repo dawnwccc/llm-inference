@@ -10,11 +10,10 @@ def load_model(model_name_or_path: str, device, **from_pretrained_kwargs):
     tokenizer, model = (GlobalFactory.
                         get_model_adapter(model_name_or_path).
                         load_model(model_name_or_path, device, **from_pretrained_kwargs))
-    stream_completion_function = GlobalFactory.get_stream_completion_function(model_name_or_path)
-    embedding_function = GlobalFactory.get_embedding_function(model_name_or_path)
+    model_function = GlobalFactory.get_model_function(model_name_or_path)
     if debug:
         print(model)
-    return tokenizer, model, stream_completion_function, embedding_function
+    return tokenizer, model, model_function
 
 
 class ModelAdapter:

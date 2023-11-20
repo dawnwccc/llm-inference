@@ -11,13 +11,14 @@ import uvicorn
 from fastapi import FastAPI
 from datetime import datetime
 from utils import Logger
-from utils.enums import ModelFunction
 from config import ServerConfig
 from apscheduler.schedulers.background import BackgroundScheduler
 from protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, CompletionRequest, \
     BaseResponse, CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo, ChatCompletionResponse, \
     CompletionResponse, ChatCompletionChoiceResponse, ChatCompletionRequest, ChatMessage
 from utils.factory import GlobalFactory
+from utils.enums import ModelFunctionEnum
+from models.base_model import AbstractModelFunction
 # init
 import inference
 from utils import chat_template
@@ -27,7 +28,7 @@ class BaseModelServer:
     """
     基础LLM服务类
     """
-    MODEL_FUNCTION: List[ModelFunction] = []
+    MODEL_FUNCTION: List[ModelFunctionEnum] = []
 
     def __init__(self, model_name: str, model_name_or_path: str, device: str, **kwargs):
         # 读取模型所需信息
@@ -43,8 +44,7 @@ class BaseModelServer:
         self.device_map = kwargs.pop("device_map", "auto")
         self.kwargs = kwargs
         self.context_length = kwargs.pop("context_length", 2048)
-        self.stream_completion_function = None
-        self.embedding_function = None
+        self.model_function: AbstractModelFunction = None
         # 注册模型所需信息
         self.register_flag = False
         self.client = None
@@ -144,13 +144,16 @@ class BaseModelServer:
             self.torch_dtype = torch.float32
             self.logger.warning("CPU: using torch.float32 to load model")
         self.kwargs["offload_folder"] = os.path.join(self.model_name_or_path, "offload")
-        self.tokenizer, self.model, self.stream_completion_function, self.embedding_function = \
-            load_model(model_name_or_path=self.model_name_or_path,
-                       device=self.device,
-                       torch_dtype=self.torch_dtype,
-                       load_in_8bit=self.load_8bit,
-                       device_map=self.device_map,
-                       **self.kwargs)
+        self.tokenizer, self.model, model_function_class = load_model(model_name_or_path=self.model_name_or_path,
+                                                                      device=self.device,
+                                                                      torch_dtype=self.torch_dtype,
+                                                                      load_in_8bit=self.load_8bit,
+                                                                      device_map=self.device_map,
+                                                                      **self.kwargs)
+        self.model_function = model_function_class(self.tokenizer,
+                                                   self.model,
+                                                   self.device,
+                                                   self.context_length)
 
     @abstractmethod
     def build_logger(self):
@@ -158,97 +161,90 @@ class BaseModelServer:
 
     def completion(self, params):
         session_id = params["id"]
+        prompt = params["prompt"]
+        n = params.get("n", 1)
+        prompt_size = len(prompt) if isinstance(prompt, list) else 1
         response = CompletionResponse(
             id=params["id"],
             model=params["model"],
-            choices=[],
-            usage=CompletionUsageInfo()
-        )
-        n = params.get("n", 1)
-        prompts = params["prompt"]
-        if isinstance(prompts, str):
-            prompts = [prompts]
-        for prompt in prompts:
-            for index in range(n):
-                choice = CompletionChoiceResponse(
-                    index=index,
-                    start=int(datetime.now().timestamp() * 1000),  # 毫秒为单位
+            choices=[
+                CompletionChoiceResponse(
+                    index=i,
+                    start=int(datetime.now().timestamp() * 1000),
                     end=None,
                     text="",
                     logprobs=None,
                     finish_reason=None,
                     usage=None
                 )
-                for temp_out in self.stream_completion_function(self.model,
-                                                                self.tokenizer,
-                                                                prompt,
-                                                                params,
-                                                                self.device,
-                                                                self.context_length,
-                                                                stream_interval=3):
-                    if temp_out is None:
-                        break
-                    choice.text = temp_out["text"]
-                    if params["logprobs"]:
-                        choice.logprobs = CompletionLogprobs(**temp_out["logprobs"])
-                    choice.finish_reason = temp_out["finish_reason"]
-                    choice.usage = CompletionUsageInfo(**temp_out["usage"])
-                    if session_id in self.sessions_to_kill:
-                        self.logger.info(f"kill session {session_id}, generate stop")
-                        self.sessions_to_kill.remove(session_id)
-                        temp_out["interrupt"] = True
-                choice.end = int(datetime.now().timestamp() * 1000)
-                response.usage.prompt_tokens += choice.usage.prompt_tokens
-                response.usage.completion_tokens += choice.usage.completion_tokens
-                response.usage.total_tokens += choice.usage.total_tokens
-                response.choices.append(choice)
+                for i in range(prompt_size * n)
+            ],
+            usage=CompletionUsageInfo()
+        )
+        for temp_response in self.model_function.stream_completion(prompt, params, stream_interval=3):
+            if temp_response is None:
+                break
+            for index, temp_choice in enumerate(temp_response["choices"]):
+                choice = response.choices[index]
+                choice.text = temp_choice["text"]
+                choice.logprobs = CompletionLogprobs(**temp_choice["logprobs"]) if temp_choice["logprobs"] else None
+                choice.finish_reason = temp_choice["finish_reason"]
+                if temp_choice["finish_reason"] and len(temp_choice["finish_reason"]) != 0:
+                    response.choices[index].end = int(datetime.now().timestamp() * 1000)
+                choice.usage = CompletionUsageInfo(**temp_choice["usage"])
+
+            if session_id in self.sessions_to_kill:
+                self.logger.info(f"kill session {session_id}, generate stop")
+                self.sessions_to_kill.remove(session_id)
+                temp_response["interrupted"] = True
+            response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
+            response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
+            response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         return response
 
     def chat_completion(self, params):
         session_id = params["id"]
+        message_template = GlobalFactory.get_chat_template(params["model"])
+        n = params.get("n", 1)
+        params["stop_str"].extend(message_template.stop_str)
         response = ChatCompletionResponse(
             id=params["id"],
             model=params["model"],
-            choices=[],
+            choices=[
+                ChatCompletionChoiceResponse(
+                    index=i,
+                    start=int(datetime.now().timestamp() * 1000),  # 毫秒为单位
+                    end=None,
+                    message=ChatMessage(role=message_template.roles[-1], content=""),
+                    logprobs=None,
+                    finish_reason=None,
+                    usage=None
+                )
+                for i in range(n)
+            ],
             usage=CompletionUsageInfo()
         )
-        message_template = GlobalFactory.get_chat_template(params["model"])
-        params["stop_str"].extend(message_template.stop_str)
-        n = params.get("n", 1)
-        prompt = message_template.complete_message(params["messages"])
-        for index in range(n):
-            choice = ChatCompletionChoiceResponse(
-                index=index,
-                start=int(datetime.now().timestamp() * 1000),  # 毫秒为单位
-                end=None,
-                text="",
-                logprobs=None,
-                finish_reason=None,
-                usage=None
-            )
-            for temp_out in self.stream_completion_function(self.model,
-                                                            self.tokenizer,
-                                                            prompt,
-                                                            params,
-                                                            self.device,
-                                                            self.context_length,
-                                                            stream_interval=3):
-                if temp_out is None:
-                    break
-                choice.message = ChatMessage(role="", content=temp_out["text"])
-                if params["logprobs"]:
-                    choice.logprobs = CompletionLogprobs(**temp_out["logprobs"])
-                choice.finish_reason = temp_out["finish_reason"]
-                choice.usage = CompletionUsageInfo(**temp_out["usage"])
-                if session_id in self.sessions_to_kill:
-                    self.logger.info(f"kill session {session_id}, generate stop")
-                    self.sessions_to_kill.remove(session_id)
-                    temp_out["interrupt"] = True
-            choice.end = int(datetime.now().timestamp() * 1000)
-            response.usage.prompt_tokens += choice.usage.prompt_tokens
-            response.usage.completion_tokens += choice.usage.completion_tokens
-            response.usage.total_tokens += choice.usage.total_tokens
-            response.choices.append(choice)
+        for temp_response in self.model_function.stream_chat_completion(message_template,
+                                                                        params["messages"],
+                                                                        params,
+                                                                        stream_interval=3):
+            if temp_response is None:
+                break
+            for index, temp_choice in enumerate(temp_response["choices"]):
+                choice = response.choices[index]
+                choice.message.content = temp_choice["text"]
+                choice.logprobs = CompletionLogprobs(**temp_choice["logprobs"]) if temp_choice["logprobs"] else None
+                choice.finish_reason = temp_choice["finish_reason"]
+                if temp_choice["finish_reason"] and len(temp_choice["finish_reason"]) != 0:
+                    response.choices[index].end = int(datetime.now().timestamp() * 1000)
+                choice.usage = CompletionUsageInfo(**temp_choice["usage"])
+            if session_id in self.sessions_to_kill:
+                self.logger.info(f"kill session {session_id}, generate stop")
+                self.sessions_to_kill.remove(session_id)
+                temp_response["interrupted"] = True
+            response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
+            response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
+            response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         return response
 
 
@@ -257,19 +253,25 @@ app = FastAPI()
 
 @app.post("/v1/completions")
 def completion(request: CompletionRequest):
-    out = server.completion(request.parse2dict())
+    params = request.parse2dict()
+    if len(params["prompt"]) == 0:
+        return BaseResponse().error().message("messages can't be empty")
+    out = server.completion(params)
     return BaseResponse().success().update_data(out)
 
 
 @app.post("/v1/chat/completions")
 def chat_completion(request: ChatCompletionRequest):
-    out = server.chat_completion(request.parse2dict())
+    params = request.parse2dict()
+    if len(params["messages"]) == 0:
+        return BaseResponse().error().set_message("messages can't be empty")
+    out = server.chat_completion(params)
     return BaseResponse().success().update_data(out)
 
 
 if __name__ == "__main__":
-    server = BaseModelServer("pycoder258k", r"C:\Projects\Python\my-llm-utils\model\iter258k", "cpu",
-                             revision="main")
-    # server = BaseModelServer("chatglm", r"C:\Research\llm_code_quality_research\model\chatglm3-6b", "cpu",
-    #                          revision="main", debug=True)
+    # server = BaseModelServer("pycoder258k", r"C:\Projects\Python\my-llm-utils\model\iter258k", "cpu",
+    #                          revision="main")
+    server = BaseModelServer("chatglm", r"C:\Research\llm_code_quality_research\models\chatglm3-6b", "cpu",
+                             revision="main", debug=True)
     server.run(app, port=8001)

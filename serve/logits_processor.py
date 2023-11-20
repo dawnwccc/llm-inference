@@ -3,7 +3,7 @@ import torch
 from transformers.generation.logits_process import LOGITS_PROCESSOR_INPUTS_DOCSTRING
 
 
-class InvalidScoreLogitsProcessor(LogitsProcessor):
+class ChatGLMInvalidScoreLogitsProcessor(LogitsProcessor):
     @add_start_docstrings(LOGITS_PROCESSOR_INPUTS_DOCSTRING)
     def __call__(
             self, input_ids: torch.LongTensor, scores: torch.FloatTensor

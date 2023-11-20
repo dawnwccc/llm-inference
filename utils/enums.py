@@ -1,15 +1,14 @@
 from enum import Enum
 
 
-class ModelFunction(Enum):
+class ModelFunctionEnum(Enum):
     completion = "text_completion"
     chat_completion = "chat.completion"
-    chat_completion_chunk = "chat.completion.chunk"
     embedding = "embedding"
 
 
 class OpenAICompletionObjectEnum(Enum):
-    completions = "text_completion"
+    completion = "text_completion"
     chat_completion = "chat.completion"
     chat_completion_chunk = "chat.completion.chunk"
     embedding = "embedding"
@@ -27,5 +26,3 @@ class HTTPStatusCode(Enum):
     """
     OK = 5200  # 成功
     ERROR = 5500  # 服务端发生错误
-
-

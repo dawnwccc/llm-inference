@@ -2,7 +2,7 @@ import json
 from typing import Union, List, Dict, Optional, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
-from utils.enums import ModelFunction, HTTPStatusCode, CompletionFinishReasonEnum
+from utils.enums import ModelFunctionEnum, HTTPStatusCode, CompletionFinishReasonEnum
 
 
 class BaseRequest(BaseModel):
@@ -137,7 +137,7 @@ class EmbeddingsRequest(BaseRequest):
 
 
 class KillSessionRequest(BaseRequest):
-    object: ModelFunction
+    object: ModelFunctionEnum
 
 
 class ModelPermission(BaseModel):
@@ -195,7 +195,7 @@ class CompletionChoiceResponse(BaseModel):
 
 class CompletionResponse(BaseModel):
     id: Optional[str] = None
-    object: ModelFunction = ModelFunction.completion
+    object: ModelFunctionEnum = ModelFunctionEnum.completion
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     model: str
     choices: List[CompletionChoiceResponse] = []
@@ -242,7 +242,7 @@ class ChatCompletionChoiceResponse(BaseModel):
 class ChatCompletionResponse(BaseModel):
     id: Optional[str] = None
     model: str
-    object: ModelFunction = ModelFunction.chat_completion
+    object: ModelFunctionEnum = ModelFunctionEnum.chat_completion
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     choices: List[ChatCompletionChoiceResponse]
     usage: Optional[CompletionUsageInfo] = None

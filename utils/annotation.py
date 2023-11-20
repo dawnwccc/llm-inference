@@ -1,4 +1,3 @@
-from model.adapter import ModelAdapter
 
 
 def httpx_timeout_retry(max_retries):
