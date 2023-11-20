@@ -1,11 +1,17 @@
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+from typing import Tuple
+
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, PreTrainedTokenizer, PreTrainedModel
 from config import ServerConfig
 import os
 from abc import abstractmethod
-from utils.factory import GlobalFactory, register_model_adapter
+
+from serve.models.base_model import AbstractModelFunction
+from serve.utils.factory import GlobalFactory, register_model_adapter
 
 
-def load_model(model_name_or_path: str, device, **from_pretrained_kwargs):
+def load_model(
+        model_name_or_path: str, device, **from_pretrained_kwargs
+    ) -> Tuple[PreTrainedTokenizer, PreTrainedModel, AbstractModelFunction]:
     debug = from_pretrained_kwargs.pop("debug", False)
     tokenizer, model = (GlobalFactory.
                         get_model_adapter(model_name_or_path).

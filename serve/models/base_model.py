@@ -1,14 +1,17 @@
 import gc
 from abc import ABC, abstractmethod
 from typing import Union, List, Dict, Any
-from serve.inference import default_logits_processor, check_stop_str, batch_tokenize
+from serve.utils.inference import default_logits_processor, check_stop_str, batch_tokenize
 import torch
-from utils import CompletionFinishReasonEnum
-from utils.chat_template import ChatTemplate
-from utils.factory import register_model_function
+from serve.utils.enums import CompletionFinishReasonEnum
+from serve.utils.chat_template import ChatTemplate
+from serve.utils.factory import register_model_function
+
+from serve.entity.inference import TempCompletionResponse
+from serve.entity.protocol import CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo
 
 
-class AbstractModelFunction(ABC):
+class AbstractModelFunction:
     """模型功能抽象类"""
 
     def __init__(self, tokenizer, model, device, context_length):
@@ -17,7 +20,9 @@ class AbstractModelFunction(ABC):
         self.device = device
         self.context_length = context_length
 
-    def stream_completion(self, prompt: Union[str, List[str]], params: Dict[str, Any], stream_interval: int = 2):
+    def stream_completion(
+            self, prompt: Union[str, List[str]], params: Dict[str, Any], stream_interval: int = 2
+    ) -> TempCompletionResponse:
         """流式文本补全"""
         # TODO: 判断设备使用情况
         n = params.get("n", 1)
@@ -29,24 +34,30 @@ class AbstractModelFunction(ABC):
         return self.batch_stream_completion(prompt, params, self.device, stream_interval)
 
     @abstractmethod
-    def single_stream_completion(self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str,
-                                 stream_interval: int = 2):
+    def single_stream_completion(
+            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+    ) -> TempCompletionResponse:
         """流式文本补全"""
         pass
 
     @abstractmethod
-    def batch_stream_completion(self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str,
-                                stream_interval: int = 2):
+    def batch_stream_completion(
+            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+    ) -> TempCompletionResponse:
         """批次文本补全"""
         pass
 
-    def stream_chat_completion(self, chat_template: ChatTemplate, messages: List[dict], params: Dict[str, Any],
-                               stream_interval: int = 2):
+    def stream_chat_completion(
+            self, chat_template: ChatTemplate, messages: List[dict], params: Dict[str, Any], stream_interval: int = 2
+    ) -> TempCompletionResponse:
         prompt = chat_template.complete_message(messages)
         return self.stream_completion(prompt, params, stream_interval)
 
     @abstractmethod
     def embedding(self):
+        pass
+
+    def __call__(self, *args, **kwargs):
         pass
 
 
@@ -57,8 +68,9 @@ class DefaultModelFunction(AbstractModelFunction):
         super().__init__(tokenizer, model, device, context_length)
 
     @torch.inference_mode()
-    def single_stream_completion(self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str,
-                                 stream_interval: int = 2):
+    def single_stream_completion(
+            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+    ) -> TempCompletionResponse:
         # 初始化参数
         len_prompt = len(prompt)
         temperature = float(params.get("temperature", 1.0))
@@ -161,7 +173,8 @@ class DefaultModelFunction(AbstractModelFunction):
                         top_logprobs[token_text] = prompt_openai_logprobs[prompt_token_index, token].tolist()
                     prompt_token_offsets += len(prompt_next_token_text)
                     logprobs_tokens.append(prompt_next_token_text)
-                    logprobs_token_logprobs.append(prompt_openai_logprobs[prompt_token_index, prompt_next_token].tolist())
+                    logprobs_token_logprobs.append(
+                        prompt_openai_logprobs[prompt_token_index, prompt_next_token].tolist())
                     logprobs_text_offsets.append(prompt_token_offsets)
                     logprobs_top_logprobs.append(top_logprobs)
 
@@ -212,14 +225,14 @@ class DefaultModelFunction(AbstractModelFunction):
                 output_ids.append(current_token)
                 if token_index == max_new_tokens:
                     is_stopped = True
-                    finish_reason = CompletionFinishReasonEnum.length.value
+                    finish_reason = CompletionFinishReasonEnum.length
             else:
                 is_stopped = True
-                finish_reason = CompletionFinishReasonEnum.length.value
+                finish_reason = CompletionFinishReasonEnum.length
 
             if current_token in stop_token_ids:
                 is_stopped = True
-                finish_reason = CompletionFinishReasonEnum.stop.value
+                finish_reason = CompletionFinishReasonEnum.stop
 
             if token_index % stream_interval == 0 or is_stopped:
                 output = self.tokenizer.decode(
@@ -232,34 +245,54 @@ class DefaultModelFunction(AbstractModelFunction):
                     stop_str_stopped, output = check_stop_str(output, stop_str_list, len_prompt if echo else 0)
                     if stop_str_stopped:
                         is_stopped = True
-                        finish_reason = CompletionFinishReasonEnum.stop.value
-                response = {
-                    "choices": [{
-                        "text": output,
-                        "logprobs": None if not is_logprobs else {
-                            "text_offset": logprobs_text_offsets,
-                            "token_logprobs": logprobs_token_logprobs,
-                            "tokens": logprobs_tokens,
-                            "top_logprobs": logprobs_top_logprobs
-                        },
-                        "usage": {
-                            "prompt_tokens": len(input_ids),
-                            "completion_tokens": token_index,
-                            "total_tokens": input_ids_length + token_index,
-                        },
-                        "finish_reason": finish_reason,
-                    }]
-                }
+                        finish_reason = CompletionFinishReasonEnum.stop
+
+                response = TempCompletionResponse(
+                    choices=[CompletionChoiceResponse(
+                        text=output,
+                        logprobs=None if not is_logprobs else CompletionLogprobs(
+                            text_offset=logprobs_text_offsets,
+                            token_logprobs=logprobs_token_logprobs,
+                            tokens=logprobs_tokens,
+                            top_logprobs=logprobs_top_logprobs
+                        ),
+                        usage=CompletionUsageInfo(
+                            prompt_tokens=input_ids_length,
+                            completion_tokens=token_index,
+                            total_tokens=input_ids_length + token_index
+                        ),
+                        finish_reason=finish_reason
+                    )],
+                    interrupted=False
+                )
+                # response = {
+                #     "choices": [{
+                #         "text": output,
+                #         "logprobs": None if not is_logprobs else {
+                #             "text_offset": logprobs_text_offsets,
+                #             "token_logprobs": logprobs_token_logprobs,
+                #             "tokens": logprobs_tokens,
+                #             "top_logprobs": logprobs_top_logprobs
+                #         },
+                #         "usage": {
+                #             "prompt_tokens": len(input_ids),
+                #             "completion_tokens": token_index,
+                #             "total_tokens": input_ids_length + token_index,
+                #         },
+                #         "finish_reason": finish_reason,
+                #     }]
+                # }
                 yield response
-                is_interrupted = response.get("interrupted", False)
+                is_interrupted = response.interrupted
 
         del past_key_values, out
         gc.collect()
         torch.cuda.empty_cache()
 
     @torch.inference_mode()
-    def batch_stream_completion(self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str,
-                                stream_interval: int = 2):
+    def batch_stream_completion(
+            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+    ) -> TempCompletionResponse:
         # 初始化参数
         temperature = float(params.get("temperature", 1.0))
         repetition_penalty = float(params.get("repetition_penalty", 1.0))
@@ -378,7 +411,8 @@ class DefaultModelFunction(AbstractModelFunction):
                             top_logprobs[token_text] = batch_openai_logprobs[i, prompt_token_index, token].tolist()
                         prompt_token_offsets[i] += len(prompt_next_token_text)
                         batch_logprobs[i]["tokens"].append(prompt_next_token_text)
-                        batch_logprobs[i]["token_logprobs"].append(batch_openai_logprobs[i, prompt_token_index, prompt_next_token].tolist())
+                        batch_logprobs[i]["token_logprobs"].append(
+                            batch_openai_logprobs[i, prompt_token_index, prompt_next_token].tolist())
                         batch_logprobs[i]["text_offset"].append(prompt_token_offsets[i])
                         batch_logprobs[i]["top_logprobs"].append(top_logprobs)
 
@@ -467,28 +501,50 @@ class DefaultModelFunction(AbstractModelFunction):
                         if is_stopped:
                             running_state[i] = False
                             finish_reason[i] = CompletionFinishReasonEnum.stop.value
-                response = {
-                    "choices": [
-                        {
-                            "text": batch_output[i],
-                            "logprobs": None if not is_logprobs else {
-                                "text_offset": batch_logprobs[i]["text_offset"],
-                                "token_logprobs": batch_logprobs[i]["token_logprobs"],
-                                "tokens": batch_logprobs[i]["tokens"],
-                                "top_logprobs": batch_logprobs[i]["top_logprobs"]
-                            },
-                            "usage": {
-                                "prompt_tokens": batch_input_ids_length[i],
-                                "completion_tokens": token_index[i],
-                                "total_tokens": batch_input_ids_length[i] + token_index[i]
-                            },
-                            "finish_reason": finish_reason[i]
-                        }
+
+                response = TempCompletionResponse(
+                    choices=[
+                        CompletionChoiceResponse(
+                            text=batch_output[i],
+                            logprobs=None if not is_logprobs else CompletionLogprobs(
+                                text_offset=batch_logprobs[i]["text_offset"],
+                                token_logprobs=batch_logprobs[i]["token_logprobs"],
+                                tokens=batch_logprobs[i]["tokens"],
+                                top_logprobs=batch_logprobs[i]["top_logprobs"]
+                            ),
+                            usage=CompletionUsageInfo(
+                                prompt_tokens=batch_input_ids_length[i],
+                                completion_tokens=token_index[i],
+                                total_tokens=batch_input_ids_length[i] + token_index[i]
+                            ),
+                            finish_reason=finish_reason[i]
+                        )
                         for i in range(task_total)
-                    ]
-                }
+                    ],
+                    interrupted=False
+                )
+                # response = {
+                #     "choices": [
+                #         {
+                #             "text": batch_output[i],
+                #             "logprobs": None if not is_logprobs else {
+                #                 "text_offset": batch_logprobs[i]["text_offset"],
+                #                 "token_logprobs": batch_logprobs[i]["token_logprobs"],
+                #                 "tokens": batch_logprobs[i]["tokens"],
+                #                 "top_logprobs": batch_logprobs[i]["top_logprobs"]
+                #             },
+                #             "usage": {
+                #                 "prompt_tokens": batch_input_ids_length[i],
+                #                 "completion_tokens": token_index[i],
+                #                 "total_tokens": batch_input_ids_length[i] + token_index[i]
+                #             },
+                #             "finish_reason": finish_reason[i]
+                #         }
+                #         for i in range(task_total)
+                #     ]
+                # }
                 yield response
-                is_interrupted = response.get("interrupted", False)
+                is_interrupted = response.interrupted
             current_token = torch.tensor(current_token, dtype=torch.int32).unsqueeze(1).to(device)
             new_mask = torch.tensor(running_state, dtype=torch.int8).unsqueeze(1).to(device)
             attention_mask = torch.cat([attention_mask, new_mask], dim=1)

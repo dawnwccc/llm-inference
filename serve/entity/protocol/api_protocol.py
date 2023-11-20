@@ -2,7 +2,7 @@ import json
 from typing import Union, List, Dict, Optional, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
-from utils.enums import ModelFunctionEnum, HTTPStatusCode, CompletionFinishReasonEnum
+from serve.utils.enums import ModelFunctionEnum, HTTPStatusCode, CompletionFinishReasonEnum
 
 
 class BaseRequest(BaseModel):
@@ -76,26 +76,33 @@ class BaseResponse(BaseModel):
             self.message = "unknown error"
         return self
 
-    def set_data(self, key: str, value: Any):
-        self.data[key] = value
-        return self
-
-    def update_data(self, value: Union[dict, BaseModel]):
-        if isinstance(value, dict):
-            self.data.update(value)
-        elif isinstance(value, BaseModel):
-            self.data.update(value.model_dump())
+    def set_data(self, value: Any = None, key: Union[str, dict, BaseModel] = None):
+        if key and isinstance(key, str):
+            self.data[key] = value
         else:
-            raise ValueError("value must be dict or BaseModel")
+            if isinstance(value, dict):
+                self.data.update(value)
+            elif isinstance(value, BaseModel):
+                self.data.update(value.model_dump())
+            else:
+                raise ValueError("value must be dict or BaseModel")
         return self
 
-    def set_message(self, message: str):
+    def set_message(self, message: str, code: Union[int, HTTPStatusCode] = None):
         self.message = message
+        if code:
+            self.code = code
         return self
 
     def set_code(self, code: Union[int, HTTPStatusCode]):
         self.code = code
         return self
+
+    def parse2dict(self):
+        return json.loads(self.model_dump_json())
+
+    def parse2json(self):
+        return self.model_dump_json()
 
 
 class ModelRegisterRequest(BaseRequest):

@@ -3,10 +3,13 @@ import re
 import warnings
 from typing import Union, List, Dict, Any
 import torch
-from serve.inference import check_stop_str
-from base_model import AbstractModelFunction
-from serve.logits_processor import ChatGLMInvalidScoreLogitsProcessor
-from utils.enums import CompletionFinishReasonEnum
+
+from serve.entity.inference import TempCompletionResponse
+from serve.entity.protocol import CompletionChoiceResponse, CompletionUsageInfo
+from serve.utils.inference import check_stop_str
+from serve.models.base_model import AbstractModelFunction
+from serve.utils.inference.logits_processor import ChatGLMInvalidScoreLogitsProcessor
+from serve.utils.enums import CompletionFinishReasonEnum
 
 
 def chatglm_process_output(response):
@@ -86,18 +89,33 @@ class ChatGLMModelFunction(AbstractModelFunction):
                     if is_stopped:
                         finish_reason = CompletionFinishReasonEnum.stop
 
-                response = {
-                    "text": output,
-                    "logprobs": None,
-                    "usage": {
-                        "prompt_tokens": input_ids_length,
-                        "completion_tokens": token_index,
-                        "total_tokens": input_ids_length + token_index,
-                    },
-                    "finish_reason": finish_reason,
-                }
+                response = TempCompletionResponse(
+                    choices=[
+                        CompletionChoiceResponse(
+                            text=output,
+                            logprobs=None,
+                            usage=CompletionUsageInfo(
+                                prompt_tokens=input_ids_length,
+                                completion_tokens=token_index,
+                                total_tokens=input_ids_length + token_index
+                            ),
+                            finish_reason=finish_reason
+                        )
+                    ],
+                    interrupted=False
+                )
+                # response = {
+                #     "text": output,
+                #     "logprobs": None,
+                #     "usage": {
+                #         "prompt_tokens": input_ids_length,
+                #         "completion_tokens": token_index,
+                #         "total_tokens": input_ids_length + token_index,
+                #     },
+                #     "finish_reason": finish_reason,
+                # }
                 yield response
-                is_interrupted = response.get("interrupted", False)
+                is_interrupted = response.interrupted
                 if is_interrupted or is_stopped:
                     break
         gc.collect()

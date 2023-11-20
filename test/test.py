@@ -1,4 +1,3 @@
-try:
-    raise TimeoutException("Timeout")
-except TimeoutError as e:
-    print(e)
+from transformers import PreTrainedTokenizer
+
+tokenizer: PreTrainedTokenizer = None

@@ -1,7 +1,7 @@
 from typing import Union, List, Optional, Dict
 from pydantic import BaseModel
-from .api_protocol import BaseRequest
-from utils.enums import OpenAICompletionObjectEnum, CompletionFinishReasonEnum
+from serve.entity.protocol import BaseRequest
+from serve.utils.enums import OpenAICompletionObjectEnum, CompletionFinishReasonEnum
 
 
 class OpenAICompletionRequest(BaseRequest):

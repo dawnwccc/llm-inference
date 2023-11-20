@@ -2,7 +2,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Tuple, Dict, List, Optional, Union, overload
 from datetime import datetime
-from utils.factory import register_chat_template
+from serve.utils.factory import register_chat_template
 
 
 @dataclass

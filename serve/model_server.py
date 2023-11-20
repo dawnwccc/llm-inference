@@ -4,23 +4,29 @@ import sys
 import shortuuid
 from abc import abstractmethod
 import httpx
-from typing import List
-from .utils.adapter import load_model
+from typing import List, Literal, Dict, Any
+
+from apscheduler.schedulers.base import BaseScheduler
+from transformers import PreTrainedTokenizer, PreTrainedModel
+
+from serve.entity.exception import GlobalException, global_exception_handler
+from serve.entity.inference import TempCompletionResponse
+from serve.utils.adapter import load_model
 import torch
 import uvicorn
 from fastapi import FastAPI
 from datetime import datetime
-from utils import Logger
+from serve.utils import Logger
 from config import ServerConfig
 from apscheduler.schedulers.background import BackgroundScheduler
-from entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, CompletionRequest, \
-    BaseResponse, CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo, ChatCompletionResponse, \
-    CompletionResponse, ChatCompletionChoiceResponse, ChatCompletionRequest, ChatMessage
-from utils.factory import GlobalFactory
-from utils.enums import ModelFunctionEnum
-from models.base_model import AbstractModelFunction
+from serve.entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, \
+    CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo, ChatCompletionResponse, \
+    CompletionResponse, ChatCompletionChoiceResponse, ChatMessage
+from serve.utils.factory import GlobalFactory
+from serve.utils.enums import ModelFunctionEnum
+from serve.models.base_model import AbstractModelFunction
 # init
-from utils import chat_template
+from serve.utils import chat_template
 
 
 class BaseModelServer:
@@ -29,33 +35,33 @@ class BaseModelServer:
     """
     MODEL_FUNCTION: List[ModelFunctionEnum] = []
 
-    def __init__(self, model_name: str, model_name_or_path: str, device: str, **kwargs):
+    def __init__(self, model_name: str, model_name_or_path: str, device: Literal["cpu", "cuda"], **kwargs):
         # 读取模型所需信息
-        self.model_name = model_name
-        self.model_name_or_path = model_name_or_path
-        self.tokenizer = None
-        self.model = None
-        self.device = device
-        self.torch_dtype = kwargs.pop("torch_dtype", torch.float16)
-        self.num_gpus = kwargs.pop("num_gpus", 1)
-        self.load_8bit = kwargs.pop("load_8bit", False)
-        self.cpu_offloading = kwargs.pop("cpu_offloading", False)
-        self.device_map = kwargs.pop("device_map", "auto")
-        self.kwargs = kwargs
-        self.context_length = kwargs.pop("context_length", 2048)
+        self.model_name: str = model_name
+        self.model_name_or_path: str = model_name_or_path
+        self.tokenizer: PreTrainedTokenizer = None
+        self.model: PreTrainedModel = None
+        self.device: Literal["cpu", "gpu"] = device
+        self.torch_dtype: torch.dtype = kwargs.pop("torch_dtype", torch.float16)
+        self.num_gpus: int = kwargs.pop("num_gpus", 1)
+        self.load_8bit: bool = kwargs.pop("load_8bit", False)
+        self.cpu_offloading: bool = kwargs.pop("cpu_offloading", False)
+        self.device_map: str = kwargs.pop("device_map", "auto")
+        self.kwargs: dict = kwargs
+        self.context_length: int = kwargs.pop("context_length", 2048)
         self.model_function: AbstractModelFunction = None
         # 注册模型所需信息
-        self.register_flag = False
-        self.client = None
-        self.center_url = f"http://{ServerConfig.SERVER_CENTER_URL}:{ServerConfig.SERVER_CENTER_PORT}"
-        self.model_url = None
+        self.register_flag: bool = False
+        self.client: httpx.Client = None
+        self.center_url: str = f"http://{ServerConfig.SERVER_CENTER_URL}:{ServerConfig.SERVER_CENTER_PORT}"
+        self.model_url: str = None
         # 定时器
-        self.heartbeat_scheduler = BackgroundScheduler()
-        self.heartbeat_failure_count = 0
+        self.heartbeat_scheduler: BaseScheduler = BackgroundScheduler()
+        self.heartbeat_failure_count: int = 0
         # 日志
-        self.logger = self.build_logger()
+        self.logger: Logger = self.build_logger()
         # kill session
-        self.sessions_to_kill = []
+        self.sessions_to_kill: List[str] = []
 
     def send_heartbeat(self):
         try:
@@ -121,6 +127,7 @@ class BaseModelServer:
                                          max_instances=1,
                                          seconds=ServerConfig.HEARTBEAT_RATE),
         self.heartbeat_scheduler.start()
+        app.add_exception_handler(GlobalException, global_exception_handler)
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
     def load_model(self):
@@ -158,7 +165,7 @@ class BaseModelServer:
     def build_logger(self):
         return Logger(None, "base", is_control=True)
 
-    def completion(self, params):
+    def completion(self, params: Dict[str, Any]) -> CompletionResponse:
         session_id = params["id"]
         prompt = params["prompt"]
         n = params.get("n", 1)
@@ -180,28 +187,34 @@ class BaseModelServer:
             ],
             usage=CompletionUsageInfo()
         )
+        temp_response: TempCompletionResponse = None
         for temp_response in self.model_function.stream_completion(prompt, params, stream_interval=3):
             if temp_response is None:
                 break
-            for index, temp_choice in enumerate(temp_response["choices"]):
+            for index, temp_choice in enumerate(temp_response.choices):
                 choice = response.choices[index]
-                choice.text = temp_choice["text"]
-                choice.logprobs = CompletionLogprobs(**temp_choice["logprobs"]) if temp_choice["logprobs"] else None
-                choice.finish_reason = temp_choice["finish_reason"]
-                if temp_choice["finish_reason"] and len(temp_choice["finish_reason"]) != 0:
+                choice.text = temp_choice.text
+                choice.logprobs = temp_choice.logprobs
+                choice.finish_reason = temp_choice.finish_reason
+                choice.usage = temp_choice.usage
+                # choice = response.choices[index]
+                # choice.text = temp_choice.text
+                # choice.logprobs = CompletionLogprobs(**temp_choice.logprobs) if temp_choice.logprobs else None
+                # choice.finish_reason = temp_choice["finish_reason"]
+                # choice.usage = CompletionUsageInfo(**temp_choice["usage"])
+                if temp_choice.finish_reason and len(temp_choice.finish_reason) != 0:
                     response.choices[index].end = int(datetime.now().timestamp() * 1000)
-                choice.usage = CompletionUsageInfo(**temp_choice["usage"])
 
             if session_id in self.sessions_to_kill:
                 self.logger.info(f"kill session {session_id}, generate stop")
                 self.sessions_to_kill.remove(session_id)
-                temp_response["interrupted"] = True
+                temp_response.interrupted = True
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         return response
 
-    def chat_completion(self, params):
+    def chat_completion(self, params: Dict[str, Any]) -> ChatCompletionResponse:
         session_id = params["id"]
         message_template = GlobalFactory.get_chat_template(params["model"])
         n = params.get("n", 1)
@@ -223,54 +236,26 @@ class BaseModelServer:
             ],
             usage=CompletionUsageInfo()
         )
+        temp_response: TempCompletionResponse = None
         for temp_response in self.model_function.stream_chat_completion(message_template,
                                                                         params["messages"],
                                                                         params,
                                                                         stream_interval=3):
             if temp_response is None:
                 break
-            for index, temp_choice in enumerate(temp_response["choices"]):
+            for index, temp_choice in enumerate(temp_response.choices):
                 choice = response.choices[index]
-                choice.message.content = temp_choice["text"]
-                choice.logprobs = CompletionLogprobs(**temp_choice["logprobs"]) if temp_choice["logprobs"] else None
-                choice.finish_reason = temp_choice["finish_reason"]
-                if temp_choice["finish_reason"] and len(temp_choice["finish_reason"]) != 0:
+                choice.message.content = temp_choice.text
+                choice.logprobs = temp_choice.logprobs
+                choice.finish_reason = temp_choice.finish_reason
+                choice.usage = temp_choice.usage
+                if temp_choice.finish_reason and len(temp_choice.finish_reason) != 0:
                     response.choices[index].end = int(datetime.now().timestamp() * 1000)
-                choice.usage = CompletionUsageInfo(**temp_choice["usage"])
             if session_id in self.sessions_to_kill:
                 self.logger.info(f"kill session {session_id}, generate stop")
                 self.sessions_to_kill.remove(session_id)
-                temp_response["interrupted"] = True
+                temp_response.interrupted = True
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         return response
-
-
-app = FastAPI()
-
-
-@app.post("/v1/completions")
-def completion(request: CompletionRequest):
-    params = request.parse2dict()
-    if len(params["prompt"]) == 0:
-        return BaseResponse().error().message("messages can't be empty")
-    out = server.completion(params)
-    return BaseResponse().success().update_data(out)
-
-
-@app.post("/v1/chat/completions")
-def chat_completion(request: ChatCompletionRequest):
-    params = request.parse2dict()
-    if len(params["messages"]) == 0:
-        return BaseResponse().error().set_message("messages can't be empty")
-    out = server.chat_completion(params)
-    return BaseResponse().success().update_data(out)
-
-
-if __name__ == "__main__":
-    # server = BaseModelServer("pycoder258k", r"C:\Projects\Python\my-llm-utils\model\iter258k", "cpu",
-    #                          revision="main")
-    server = BaseModelServer("chatglm", r"C:\Research\llm_code_quality_research\models\chatglm3-6b", "cpu",
-                             revision="main", debug=True)
-    server.run(app, port=8001)
