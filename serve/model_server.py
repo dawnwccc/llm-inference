@@ -4,13 +4,16 @@ import sys
 import shortuuid
 from abc import abstractmethod
 import httpx
-from typing import List, Literal, Dict, Any
+from typing import List, Literal, Dict, Any, Union
 
 from apscheduler.schedulers.base import BaseScheduler
+from fastapi.exceptions import RequestValidationError, HTTPException
+from pydantic import ValidationError
 from transformers import PreTrainedTokenizer, PreTrainedModel
 
-from serve.entity.exception import GlobalException, global_exception_handler
-from serve.entity.inference import TempCompletionResponse
+from serve.entity.exception import GlobalException, global_exception_handler, validation_exception_handler, \
+    request_validation_exception_handler
+from serve.entity.inference import TempCompletionResponse, CompletionParams
 from serve.utils.adapter import load_model
 import torch
 import uvicorn
@@ -128,6 +131,8 @@ class BaseModelServer:
                                          seconds=ServerConfig.HEARTBEAT_RATE),
         self.heartbeat_scheduler.start()
         app.add_exception_handler(GlobalException, global_exception_handler)
+        app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
+        app.add_exception_handler(ValidationError, validation_exception_handler)
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
     def load_model(self):
@@ -165,14 +170,13 @@ class BaseModelServer:
     def build_logger(self):
         return Logger(None, "base", is_control=True)
 
-    def completion(self, params: Dict[str, Any]) -> CompletionResponse:
-        session_id = params["id"]
-        prompt = params["prompt"]
-        n = params.get("n", 1)
+    def completion(self, prompt: Union[str, List[str]], params: CompletionParams) -> CompletionResponse:
+        session_id = params.id
+        n = params.n
         prompt_size = len(prompt) if isinstance(prompt, list) else 1
         response = CompletionResponse(
-            id=params["id"],
-            model=params["model"],
+            id=session_id,
+            model=params.model,
             choices=[
                 CompletionChoiceResponse(
                     index=i,
@@ -214,14 +218,14 @@ class BaseModelServer:
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         return response
 
-    def chat_completion(self, params: Dict[str, Any]) -> ChatCompletionResponse:
-        session_id = params["id"]
-        message_template = GlobalFactory.get_chat_template(params["model"])
-        n = params.get("n", 1)
-        params["stop_str"].extend(message_template.stop_str)
+    def chat_completion(self, messages: List[ChatMessage], params: CompletionParams) -> ChatCompletionResponse:
+        session_id = params.id
+        message_template = GlobalFactory.get_chat_template(params.model)
+        n = params.n
+        params.stop_str.extend(message_template.stop_str)
         response = ChatCompletionResponse(
-            id=params["id"],
-            model=params["model"],
+            id=session_id,
+            model=params.model,
             choices=[
                 ChatCompletionChoiceResponse(
                     index=i,
@@ -238,7 +242,7 @@ class BaseModelServer:
         )
         temp_response: TempCompletionResponse = None
         for temp_response in self.model_function.stream_chat_completion(message_template,
-                                                                        params["messages"],
+                                                                        messages,
                                                                         params,
                                                                         stream_interval=3):
             if temp_response is None:

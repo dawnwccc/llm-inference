@@ -10,7 +10,7 @@ class BaseRequest(BaseModel):
     自定义大模型请求数据
     重写schema以及schema_json方法
     """
-    id: Optional[Union[str, List[str]]] = None
+    id: Optional[str]
     ip: Optional[str] = None
     api_key: Optional[str] = ""
     version: Optional[Union[str, float, int]] = 1
@@ -60,7 +60,7 @@ class BaseResponse(BaseModel):
     message: str = None
     state: bool = None
     code: Union[int, HTTPStatusCode] = None
-    data: dict = {}
+    data: dict = None
 
     def success(self):
         self.state = True
@@ -77,6 +77,8 @@ class BaseResponse(BaseModel):
         return self
 
     def set_data(self, value: Any = None, key: Union[str, dict, BaseModel] = None):
+        if not self.data:
+            self.data = {}
         if key and isinstance(key, str):
             self.data[key] = value
         else:
@@ -123,7 +125,7 @@ class CompletionRequest(BaseRequest):
     top_p: Optional[float] = 1.0
     top_k: Optional[int] = -1  # -1 means disable
     repetition_penalty: Optional[float] = 1.0
-    stop_str: Optional[Union[str, List[str]]] = []
+    stop_str: Optional[List[str]] = []
     echo: Optional[bool] = False
     stop_token_ids: Optional[Union[str, List[str]]] = []
     max_context_len: Optional[int] = 2048
@@ -209,9 +211,16 @@ class CompletionResponse(BaseModel):
     usage: Optional[CompletionUsageInfo] = None
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+    name: Optional[str] = None
+    function_call: Optional[object] = None
+
+
 class ChatCompletionRequest(BaseRequest):
     model: str
-    messages: Union[str, List[Dict[str, str]]]
+    messages: List[ChatMessage]
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 16
     top_p: Optional[float] = 1.0
@@ -219,7 +228,6 @@ class ChatCompletionRequest(BaseRequest):
     repetition_penalty: Optional[float] = 1.0
     stop_str: Optional[Union[str, List[str]]] = []
     stop_token_ids: Optional[Union[str, List[str]]] = []
-    max_context_len: Optional[int] = 2048
     stream_interval: Optional[int] = 3
     logprobs: Optional[int] = None
     n: Optional[int] = 1
@@ -227,13 +235,6 @@ class ChatCompletionRequest(BaseRequest):
     user: Optional[str] = None
     frequency_penalty: Optional[float] = 0.0
     presence_penalty: Optional[float] = 0.0
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-    # name: Optional[str] = None
-    # function_call: Optional[object] = None
 
 
 class ChatCompletionChoiceResponse(BaseModel):

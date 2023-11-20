@@ -1,19 +1,29 @@
-from fastapi import FastAPI, HTTPException
 import uvicorn
-from serve.entity.exception import GlobalException, global_exception_handler
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ValidationError
+
+
+class Item(BaseModel):
+    id: int
+    # 其他字段...
+
 
 app = FastAPI()
 
 
-def test_exp_func():
-    raise GlobalException(message="Item not found")
-    # raise GlobalException("test")
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request: Request, exc: ValidationError):
+    return JSONResponse(
+        status_code=400,
+        content=jsonable_encoder({"detail": exc.errors(), "body": exc.body}),
+    )
 
 
-@app.get("/exp")
-def test_exp():
-    test_exp_func()
-    return {"msg": "ok"}
+@app.post("/items/")
+async def create_item(item: Item):
+    return item
 
 
-uvicorn.run(app, host="127.0.0.1", port=8000)
+uvicorn.run(app, host="127.0.0.1", port=8001)

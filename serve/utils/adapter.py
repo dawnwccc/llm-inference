@@ -1,5 +1,5 @@
 from typing import Tuple
-
+from torchinfo import summary
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, PreTrainedTokenizer, PreTrainedModel
 from config import ServerConfig
 import os
@@ -18,6 +18,7 @@ def load_model(
                         load_model(model_name_or_path, device, **from_pretrained_kwargs))
     model_function = GlobalFactory.get_model_function(model_name_or_path)
     if debug:
+        # summary(model)
         print(model)
     return tokenizer, model, model_function
 

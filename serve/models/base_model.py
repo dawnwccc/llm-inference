@@ -7,8 +7,8 @@ from serve.utils.enums import CompletionFinishReasonEnum
 from serve.utils.chat_template import ChatTemplate
 from serve.utils.factory import register_model_function
 
-from serve.entity.inference import TempCompletionResponse
-from serve.entity.protocol import CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo
+from serve.entity.inference import TempCompletionResponse, CompletionParams
+from serve.entity.protocol import CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo, ChatMessage
 
 
 class AbstractModelFunction:
@@ -21,11 +21,11 @@ class AbstractModelFunction:
         self.context_length = context_length
 
     def stream_completion(
-            self, prompt: Union[str, List[str]], params: Dict[str, Any], stream_interval: int = 2
+            self, prompt: Union[str, List[str]], params: CompletionParams, stream_interval: int = 2
     ) -> TempCompletionResponse:
         """流式文本补全"""
         # TODO: 判断设备使用情况
-        n = params.get("n", 1)
+        n = params.n
         if n == 1:
             if isinstance(prompt, str):
                 return self.single_stream_completion(prompt, params, self.device, stream_interval)
@@ -35,20 +35,20 @@ class AbstractModelFunction:
 
     @abstractmethod
     def single_stream_completion(
-            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
     ) -> TempCompletionResponse:
         """流式文本补全"""
         pass
 
     @abstractmethod
     def batch_stream_completion(
-            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
     ) -> TempCompletionResponse:
         """批次文本补全"""
         pass
 
     def stream_chat_completion(
-            self, chat_template: ChatTemplate, messages: List[dict], params: Dict[str, Any], stream_interval: int = 2
+            self, chat_template: ChatTemplate, messages: List[ChatMessage], params: CompletionParams, stream_interval: int = 2
     ) -> TempCompletionResponse:
         prompt = chat_template.complete_message(messages)
         return self.stream_completion(prompt, params, stream_interval)
@@ -69,23 +69,23 @@ class DefaultModelFunction(AbstractModelFunction):
 
     @torch.inference_mode()
     def single_stream_completion(
-            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
     ) -> TempCompletionResponse:
         # 初始化参数
         len_prompt = len(prompt)
-        temperature = float(params.get("temperature", 1.0))
-        repetition_penalty = float(params.get("repetition_penalty", 1.0))
-        top_p = float(params.get("top_p", 1.0))
-        top_k = int(params.get("top_k", -1))
-        max_new_tokens = max(int(params.get("max_tokens", 256)), 0)
-        stop_str_list = params.get("stop_str", None)
+        temperature = params.temperature
+        repetition_penalty = params.repetition_penalty
+        top_p = params.top_p
+        top_k = params.top_k
+        max_new_tokens = params.max_tokens
+        stop_str_list = params.stop_str
         # is or not print prompt
-        echo = bool(params.get("echo", False))
-        stop_token_ids = params.get("stop_token_ids", None) or []
+        echo = params.echo
+        stop_token_ids = params.stop_token_ids
         if self.tokenizer.eos_token_id not in stop_token_ids:
             stop_token_ids.append(self.tokenizer.eos_token_id)
         # 是否输出logprobs
-        logprobs = params.get("logprobs", None)
+        logprobs = params.logprobs
         is_logprobs = logprobs is not None
         current_token_text_offset = len_prompt
         logprobs_text_offsets = []
@@ -291,28 +291,28 @@ class DefaultModelFunction(AbstractModelFunction):
 
     @torch.inference_mode()
     def batch_stream_completion(
-            self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str, stream_interval: int = 2
+            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
     ) -> TempCompletionResponse:
         # 初始化参数
-        temperature = float(params.get("temperature", 1.0))
-        repetition_penalty = float(params.get("repetition_penalty", 1.0))
-        top_p = float(params.get("top_p", 1.0))
-        top_k = int(params.get("top_k", -1))
-        max_new_tokens = max(int(params.get("max_tokens", 256)), 0)
-        stop_str_list = params.get("stop_str", None)
+        temperature = params.temperature
+        repetition_penalty = params.repetition_penalty
+        top_p = params.top_p
+        top_k = params.top_k
+        max_new_tokens = params.max_tokens
+        stop_str_list = params.stop_str
         # is or not print prompt
-        echo = bool(params.get("echo", False))
-        stop_token_ids = params.get("stop_token_ids", None) or []
+        echo = params.echo
+        stop_token_ids = params.stop_token_ids
         if self.tokenizer.eos_token_id not in stop_token_ids:
             stop_token_ids.append(self.tokenizer.eos_token_id)
-        n = params.get("n", 1)
+        n = params.n
         prompts, (input_ids, attention_mask) = batch_tokenize(self.tokenizer, prompt, n, device)
         task_total = len(input_ids)
         batch_prompt_length = [len(p[0]) for p in prompts]
         batch_input_ids_length = [sum(attn_mask.tolist()) for attn_mask in attention_mask]
         batch_output_ids = [list(input_ids[i]) if echo else [] for i in range(task_total)]
         # 是否输出logprobs
-        logprobs = params.get("logprobs", None)
+        logprobs = params.logprobs
         is_logprobs = logprobs is not None
         batch_logprobs = [{
             "current_token_text_offset": batch_prompt_length[i],

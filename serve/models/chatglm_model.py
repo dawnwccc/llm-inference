@@ -4,7 +4,7 @@ import warnings
 from typing import Union, List, Dict, Any
 import torch
 
-from serve.entity.inference import TempCompletionResponse
+from serve.entity.inference import TempCompletionResponse, CompletionParams
 from serve.entity.protocol import CompletionChoiceResponse, CompletionUsageInfo
 from serve.utils.inference import check_stop_str
 from serve.models.base_model import AbstractModelFunction
@@ -33,17 +33,17 @@ class ChatGLMModelFunction(AbstractModelFunction):
     def __init__(self, tokenizer, model, device, context_length):
         super().__init__(tokenizer, model, device, context_length)
 
-    def single_stream_completion(self, prompt: Union[str, List[str]], params: Dict[str, Any], device: str,
+    def single_stream_completion(self, prompt: Union[str, List[str]], params: CompletionParams, device: str,
                                  stream_interval: int = 2):
         len_prompt = len(prompt)
-        temperature = float(params.get("temperature", 1.0))
-        repetition_penalty = float(params.get("repetition_penalty", 1.0))
-        top_p = float(params.get("top_p", 1.0))
-        max_new_tokens = max(int(params.get("max_tokens", 256)), 0)
-        stop_str_list = params.get("stop_str", None)
+        temperature = params.temperature
+        repetition_penalty = params.repetition_penalty
+        top_p = params.top_p
+        max_new_tokens = params.max_tokens
+        stop_str_list = params.stop_str
         # is or not print prompt
-        echo = bool(params.get("echo", False))
-        stop_token_ids = params.get("stop_token_ids", None) or []
+        echo = params.echo
+        stop_token_ids = params.stop_token_ids
         eos_token_id = [
             self.tokenizer.eos_token_id,
             self.tokenizer.get_command("<|user|>"),
