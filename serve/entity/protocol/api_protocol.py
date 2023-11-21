@@ -214,8 +214,8 @@ class CompletionResponse(BaseModel):
 class ChatMessage(BaseModel):
     role: str
     content: str
-    name: Optional[str] = None
-    function_call: Optional[object] = None
+    # name: Optional[str] = None
+    # function_call: Optional[object] = None
 
 
 class ChatCompletionRequest(BaseRequest):
