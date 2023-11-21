@@ -1,3 +1,2 @@
-from transformers import PreTrainedTokenizer
-
-tokenizer: PreTrainedTokenizer = None
+a = [1, 2]
+print(a[:-1])

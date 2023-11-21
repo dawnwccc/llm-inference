@@ -11,8 +11,8 @@ from fastapi.exceptions import RequestValidationError, HTTPException
 from pydantic import ValidationError
 from transformers import PreTrainedTokenizer, PreTrainedModel
 
-from serve.entity.exception import GlobalException, global_exception_handler, validation_exception_handler, \
-    request_validation_exception_handler
+from serve.entity.exception import GlobalException, global_exception_handler, \
+    request_validation_exception_handler, exception_handler
 from serve.entity.inference import TempCompletionResponse, CompletionParams
 from serve.utils.adapter import load_model
 import torch
@@ -30,6 +30,7 @@ from serve.utils.enums import ModelFunctionEnum
 from serve.models.base_model import AbstractModelFunction
 # init
 from serve.utils import chat_template
+from serve.models import *
 
 
 class BaseModelServer:
@@ -132,7 +133,6 @@ class BaseModelServer:
         self.heartbeat_scheduler.start()
         app.add_exception_handler(GlobalException, global_exception_handler)
         app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
-        app.add_exception_handler(ValidationError, validation_exception_handler)
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
     def load_model(self):
@@ -170,6 +170,7 @@ class BaseModelServer:
     def build_logger(self):
         return Logger(None, "base", is_control=True)
 
+    @exception_handler
     def completion(self, prompt: Union[str, List[str]], params: CompletionParams) -> CompletionResponse:
         session_id = params.id
         n = params.n
@@ -218,6 +219,7 @@ class BaseModelServer:
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         return response
 
+    @exception_handler
     def chat_completion(self, messages: List[ChatMessage], params: CompletionParams) -> ChatCompletionResponse:
         session_id = params.id
         message_template = GlobalFactory.get_chat_template(params.model)

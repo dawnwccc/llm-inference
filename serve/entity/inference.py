@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from serve.entity.protocol import CompletionChoiceResponse
 from pydantic import BaseModel, Field
 
@@ -25,3 +25,10 @@ class CompletionParams(BaseModel):
     presence_penalty: float = Field(default=0.0, ge=0.0, le=2.0)
     # TODO: 完善 functions
     functions: object = None
+
+
+class Conversation(BaseModel):
+    prompt: str
+    system_messages: Optional[List[Dict[str, str]]] = []
+    few_show_messages: Optional[List[Dict[str, str]]] = []
+    history_messages: Optional[List[Dict[str, str]]] = []

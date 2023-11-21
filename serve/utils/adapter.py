@@ -31,7 +31,7 @@ class ModelAdapter:
         pass
 
 
-@register_model_adapter("default")
+# @register_model_adapter("default")
 class DefaultModelAdapter(ModelAdapter):
     """默认模型适配器"""
 
@@ -74,7 +74,7 @@ class DefaultModelAdapter(ModelAdapter):
         return tokenizer, model
 
 
-@register_model_adapter("chatglm")
+# @register_model_adapter("chatglm")
 class ChatGLModelAdapter(ModelAdapter):
 
     @classmethod

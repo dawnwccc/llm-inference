@@ -61,7 +61,7 @@ class AbstractModelFunction:
         pass
 
 
-@register_model_function("default")
+# @register_model_function("default")
 class DefaultModelFunction(AbstractModelFunction):
 
     def __init__(self, tokenizer, model, device, context_length):
