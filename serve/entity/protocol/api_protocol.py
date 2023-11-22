@@ -10,7 +10,7 @@ class BaseRequest(BaseModel):
     自定义大模型请求数据
     重写schema以及schema_json方法
     """
-    id: Optional[str]
+    id: Optional[str] = None
     ip: Optional[str] = None
     api_key: Optional[str] = ""
     version: Optional[Union[str, float, int]] = 1

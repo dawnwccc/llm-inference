@@ -1,12 +1,18 @@
 import logging
 from datetime import datetime
 from threading import Thread
-from utils.logger import Logger
+from typing import Dict, Any
+
+from fastapi.exceptions import RequestValidationError
+
+from serve.entity.exception import GlobalException, global_exception_handler, request_validation_exception_handler, \
+    exception_handler
+from serve.utils.logger import Logger
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import uvicorn
-from protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, BaseResponse
+from serve.entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, BaseResponse
 from config import ServerConfig
 
 
@@ -41,6 +47,8 @@ class LLMServerCenter:
         app.add_api_route(path=ServerConfig.HEARTBEAT_URL,
                           endpoint=self.receive_heartbeat_request,
                           methods=["POST"])
+        app.add_exception_handler(GlobalException, global_exception_handler)
+        app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
     def receive_register_request(self, request: ModelRegisterRequest):
@@ -80,6 +88,29 @@ class LLMServerCenter:
             server_info.update(v)
             model_list.append(server_info)
         return model_list
+
+    def check_request(self, params: Dict[str, Any]):
+        model = params.get("model", None)
+        if model is None:
+            raise GlobalException("model is required.")
+        if model not in self.server_list:
+            raise GlobalException(message=f"model {model} is not available")
+
+    @exception_handler
+    def completions(self, params: Dict[str, Any]):
+        self.check_request(params)
+        model = params.get("model")
+        response = httpx.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
+                              json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+        return response.json()
+
+    @exception_handler
+    def chat_completions(self, params: Dict[str, Any]):
+        self.check_request(params)
+        model = params.get("model")
+        response = httpx.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
+                              json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+        return response.json()
 
     # def _kill_session(self, model_url, model_func, session_id: Union[str, List[str]]):
     #     try:
@@ -225,15 +256,20 @@ def get_model_status():
     return BaseResponse().success().set_data("models", model_list)
 
 
-#
-#
-# @app.post(Config.register_url)
-# def register(request: LLMServiceCenterRegisterRequest):
-#     server.logger.info(f"register {request.dict()}")
-#     server.register_model(request.model_name, request.dict())
-#     return LLMServiceCenterHeartBeatResponse(state=True)
-#
-#
+@app.post("/v1/completions")
+async def completions(request: Request):
+    # TODO: analysis headers to avoid to spiders
+    params: dict = await request.json()
+    return server.completions(params)
+
+
+@app.post("/v1/chat/completions")
+async def completions(request: Request):
+    # TODO: analysis headers to avoid to spiders
+    params: dict = await request.json()
+    return server.chat_completions(params)
+
+
 # @app.post("/generate")
 # def generate(request: LLMServiceCenterRequest):
 #     return server.generate(request.model_name, request.model_kwargs, request.session_id)

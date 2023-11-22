@@ -37,6 +37,8 @@ def exception_handler(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
+        except GlobalException as exp:
+            raise GlobalException(message=exp.message, code=exp.code)
         except ValidationError as exp:
             msg = [
                 f"""{e["msg"]}: type: {e["type"]}, loc: {e["loc"][-1]}"""
@@ -44,6 +46,7 @@ def exception_handler(func):
             ]
             raise GlobalException(message=";\n".join(msg), code=HTTPStatusCode.ERROR)
         except BaseException as exp:
+            print(exp)
             raise GlobalException(message="internal system error", code=HTTPStatusCode.ERROR)
 
     return wrapper

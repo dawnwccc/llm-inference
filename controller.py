@@ -33,9 +33,9 @@ def chat_completion(request: ChatCompletionRequest):
 
 if __name__ == "__main__":
     # server = BaseModelServer("pycoder258k", r"C:\Projects\Python\my-llm-utils\model\iter258k", "cpu",
-    #                          revision="main")
+    #                          debug=True)
     # server = BaseModelServer("pycoder258k", r"H:\Projects\Python\models\python258k", "cuda",
     #                          revision="main", debug=True)
     server = BaseModelServer("chatglm3", r"C:\Research\llm_code_quality_research\models\chatglm3-6b", "cpu",
-                             revision="main")
+                             revision="main", debug=True)
     server.run(app, port=8001)

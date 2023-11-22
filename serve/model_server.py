@@ -135,6 +135,9 @@ class BaseModelServer:
         app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
+    def receive_kill_signal(self):
+        pass
+    
     def load_model(self):
         # cpu_offloading 是指在加载大型模型时, 将部分计算从CPU转移到GPU或其他加速器上进行,
         # 以减轻CPU的计算压力, 提高系统的总体执行效率。
