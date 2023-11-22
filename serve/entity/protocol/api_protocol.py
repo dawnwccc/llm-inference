@@ -145,8 +145,10 @@ class EmbeddingsRequest(BaseRequest):
     document: Union[str, List[str]]
 
 
-class KillSessionRequest(BaseRequest):
-    object: ModelFunctionEnum
+class KillSignalRequest(BaseRequest):
+    model: str
+    session_id: Union[str, List[str]]
+    # model_function: ModelFunctionEnum
 
 
 class ModelPermission(BaseModel):

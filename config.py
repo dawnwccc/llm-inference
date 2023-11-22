@@ -10,6 +10,7 @@ class ServerConfig:
 
     REGISTER_URL = "/model/register"
     HEARTBEAT_URL = "/model/heartbeat"
+    KILL_SIGNAL_URL = "/v1/completions/kill"
     # 心跳频率，单位秒
     HEARTBEAT_RATE = 30
     # 最大心跳失败次数

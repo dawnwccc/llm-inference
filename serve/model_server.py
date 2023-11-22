@@ -4,7 +4,7 @@ import sys
 import shortuuid
 from abc import abstractmethod
 import httpx
-from typing import List, Literal, Dict, Any, Union
+from typing import List, Literal, Dict, Any, Union, Set
 
 from apscheduler.schedulers.base import BaseScheduler
 from fastapi.exceptions import RequestValidationError, HTTPException
@@ -24,7 +24,7 @@ from config import ServerConfig
 from apscheduler.schedulers.background import BackgroundScheduler
 from serve.entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, \
     CompletionChoiceResponse, CompletionLogprobs, CompletionUsageInfo, ChatCompletionResponse, \
-    CompletionResponse, ChatCompletionChoiceResponse, ChatMessage
+    CompletionResponse, ChatCompletionChoiceResponse, ChatMessage, KillSignalRequest, BaseResponse
 from serve.utils.factory import GlobalFactory
 from serve.utils.enums import ModelFunctionEnum
 from serve.models.base_model import AbstractModelFunction
@@ -65,7 +65,7 @@ class BaseModelServer:
         # 日志
         self.logger: Logger = self.build_logger()
         # kill session
-        self.sessions_to_kill: List[str] = []
+        self.sessions_to_kill: Set[str] = set()
 
     def send_heartbeat(self):
         try:
@@ -131,12 +131,28 @@ class BaseModelServer:
                                          max_instances=1,
                                          seconds=ServerConfig.HEARTBEAT_RATE),
         self.heartbeat_scheduler.start()
+        app.add_api_route(path=ServerConfig.KILL_SIGNAL_URL,
+                          endpoint=self.receive_kill_signal,
+                          methods=["POST"])
         app.add_exception_handler(GlobalException, global_exception_handler)
         app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
-    def receive_kill_signal(self):
-        pass
+    def receive_kill_signal(self, request: KillSignalRequest):
+        if request.session_id is None:
+            raise GlobalException("session_id can't be None")
+        if request.model is None:
+            raise GlobalException("model can't be None")
+        if request.model != self.model_name:
+            raise GlobalException(f"model must be {self.model_name}")
+
+        if isinstance(request.session_id, str):
+            self.sessions_to_kill.add(request.session_id)
+        elif isinstance(request.session_id, list):
+            self.sessions_to_kill.update(request.session_id)
+        else:
+            raise GlobalException("session_id must be str or list")
+        return BaseResponse().success()
     
     def load_model(self):
         # cpu_offloading 是指在加载大型模型时, 将部分计算从CPU转移到GPU或其他加速器上进行,
@@ -195,6 +211,7 @@ class BaseModelServer:
             ],
             usage=CompletionUsageInfo()
         )
+        print(self.sessions_to_kill)
         temp_response: TempCompletionResponse = None
         for temp_response in self.model_function.stream_completion(prompt, params, stream_interval=3):
             if temp_response is None:
@@ -212,10 +229,9 @@ class BaseModelServer:
                 # choice.usage = CompletionUsageInfo(**temp_choice["usage"])
                 if temp_choice.finish_reason and len(temp_choice.finish_reason) != 0:
                     response.choices[index].end = int(datetime.now().timestamp() * 1000)
-
             if session_id in self.sessions_to_kill:
                 self.logger.info(f"kill session {session_id}, generate stop")
-                self.sessions_to_kill.remove(session_id)
+                self.sessions_to_kill.discard(session_id)
                 temp_response.interrupted = True
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
@@ -262,7 +278,7 @@ class BaseModelServer:
                     response.choices[index].end = int(datetime.now().timestamp() * 1000)
             if session_id in self.sessions_to_kill:
                 self.logger.info(f"kill session {session_id}, generate stop")
-                self.sessions_to_kill.remove(session_id)
+                self.sessions_to_kill.discard(session_id)
                 temp_response.interrupted = True
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
