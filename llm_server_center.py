@@ -96,7 +96,7 @@ class LLMServerCenter:
             raise GlobalException(message=f"model {model} is not available")
 
     @exception_handler
-    def completions(self, params: Dict[str, Any]):
+    async def completions(self, params: Dict[str, Any]):
         self.check_request(params)
         model = params.get("model")
         response = httpx.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
@@ -104,7 +104,7 @@ class LLMServerCenter:
         return response.json()
 
     @exception_handler
-    def chat_completions(self, params: Dict[str, Any]):
+    async def chat_completions(self, params: Dict[str, Any]):
         self.check_request(params)
         model = params.get("model")
         response = httpx.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
@@ -112,7 +112,7 @@ class LLMServerCenter:
         return response.json()
 
     @exception_handler
-    def send_kill_signal(self, model: str, session_id: Union[str, List[str]]):
+    async def send_kill_signal(self, model: str, session_id: Union[str, List[str]]):
         if model not in self.server_list:
             raise GlobalException(f"model {model} can't be killed.")
         response = httpx.post(url=f"{self.server_list[model]['server_url']}{ServerConfig.KILL_SIGNAL_URL}",
@@ -142,14 +142,14 @@ def get_model_status():
 async def completions(request: Request):
     # TODO: analysis headers to avoid to spiders
     params: dict = await request.json()
-    return server.completions(params)
+    return await server.completions(params)
 
 
 @app.post("/v1/chat/completions")
 async def completions(request: Request):
     # TODO: analysis headers to avoid to spiders
     params: dict = await request.json()
-    return server.chat_completions(params)
+    return await server.chat_completions(params)
 
 
 @app.post(ServerConfig.KILL_SIGNAL_URL)
@@ -161,7 +161,7 @@ async def kill_completion(request: Request):
         return BaseResponse().error().set_message("model is required.")
     if session_id is None:
         return BaseResponse().error().set_message("session_id is required.")
-    return server.send_kill_signal(model, session_id)
+    return await server.send_kill_signal(model, session_id)
 
 
 if __name__ == "__main__":

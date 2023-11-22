@@ -138,7 +138,7 @@ class BaseModelServer:
         app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
-    def receive_kill_signal(self, request: KillSignalRequest):
+    async def receive_kill_signal(self, request: KillSignalRequest):
         if request.session_id is None:
             raise GlobalException("session_id can't be None")
         if request.model is None:
@@ -190,7 +190,7 @@ class BaseModelServer:
         return Logger(None, "base", is_control=True)
 
     @exception_handler
-    def completion(self, prompt: Union[str, List[str]], params: CompletionParams) -> CompletionResponse:
+    async def completion(self, prompt: Union[str, List[str]], params: CompletionParams) -> CompletionResponse:
         session_id = params.id
         n = params.n
         prompt_size = len(prompt) if isinstance(prompt, list) else 1
@@ -211,7 +211,6 @@ class BaseModelServer:
             ],
             usage=CompletionUsageInfo()
         )
-        print(self.sessions_to_kill)
         temp_response: TempCompletionResponse = None
         for temp_response in self.model_function.stream_completion(prompt, params, stream_interval=3):
             if temp_response is None:
@@ -222,13 +221,9 @@ class BaseModelServer:
                 choice.logprobs = temp_choice.logprobs
                 choice.finish_reason = temp_choice.finish_reason
                 choice.usage = temp_choice.usage
-                # choice = response.choices[index]
-                # choice.text = temp_choice.text
-                # choice.logprobs = CompletionLogprobs(**temp_choice.logprobs) if temp_choice.logprobs else None
-                # choice.finish_reason = temp_choice["finish_reason"]
-                # choice.usage = CompletionUsageInfo(**temp_choice["usage"])
                 if temp_choice.finish_reason and len(temp_choice.finish_reason) != 0:
                     response.choices[index].end = int(datetime.now().timestamp() * 1000)
+            print(self.sessions_to_kill)
             if session_id in self.sessions_to_kill:
                 self.logger.info(f"kill session {session_id}, generate stop")
                 self.sessions_to_kill.discard(session_id)
@@ -236,10 +231,12 @@ class BaseModelServer:
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
+        if temp_response.interrupted:
+            raise GlobalException("completion is killed.")
         return response
 
     @exception_handler
-    def chat_completion(self, messages: List[ChatMessage], params: CompletionParams) -> ChatCompletionResponse:
+    async def chat_completion(self, messages: List[ChatMessage], params: CompletionParams) -> ChatCompletionResponse:
         session_id = params.id
         message_template = GlobalFactory.get_chat_template(params.model)
         n = params.n
@@ -283,4 +280,6 @@ class BaseModelServer:
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
+        if temp_response.interrupted:
+            raise GlobalException("chat completion is killed.")
         return response
