@@ -29,6 +29,7 @@ def chatglm_process_output(response):
         response = re.sub(r"%s([\u4e00-\u9fff])" % item[0], r"%s\1" % item[1], response)
     return response
 
+
 # @register_model_function("chatglm3")
 class ChatGLM3ModelFunction(AbstractModelFunction):
 
@@ -203,7 +204,6 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     break
         gc.collect()
         torch.cuda.empty_cache()
-
 
     def embedding(self):
         pass
