@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os.path
 import sys
@@ -19,7 +20,7 @@ import torch
 import uvicorn
 from fastapi import FastAPI
 from datetime import datetime
-from serve.utils import Logger
+from serve.utils.logger import Logger
 from config import ServerConfig
 from apscheduler.schedulers.background import BackgroundScheduler
 from serve.entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, \
@@ -28,9 +29,6 @@ from serve.entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartB
 from serve.utils.factory import GlobalFactory
 from serve.utils.enums import ModelFunctionEnum
 from serve.models.base_model import AbstractModelFunction
-# init
-from serve.utils import chat_template
-from serve.models import *
 
 
 class BaseModelServer:
@@ -56,7 +54,7 @@ class BaseModelServer:
         self.model_function: AbstractModelFunction = None
         # 注册模型所需信息
         self.register_flag: bool = False
-        self.client: httpx.Client = None
+        self.client: httpx.AsyncClient = None
         self.center_url: str = f"http://{ServerConfig.SERVER_CENTER_URL}:{ServerConfig.SERVER_CENTER_PORT}"
         self.model_url: str = None
         # 定时器
@@ -66,15 +64,16 @@ class BaseModelServer:
         self.logger: Logger = self.build_logger()
         # kill session
         self.sessions_to_kill: Set[str] = set()
+        self.sessions: Set[str] = set()
 
-    def send_heartbeat(self):
+    async def send_heartbeat(self):
         try:
             heartbeat_data = ModelHeartBeatRequest(
                 id=f"hb-{shortuuid.uuid()}",
                 ip=self.model_url.split(":")[0],
                 server_name=self.model_name
             ).parse2dict()
-            response = self.client.post(f"{ServerConfig.HEARTBEAT_URL}", json=heartbeat_data)
+            response = await self.client.post(f"{ServerConfig.HEARTBEAT_URL}", json=heartbeat_data)
             response.raise_for_status()
             if response.json().get("state", False):
                 # 心跳成功
@@ -92,7 +91,7 @@ class BaseModelServer:
                 self.logger.error(f"{self.model_name} has been exceeded maximum "
                                   f"{ServerConfig.MAX_HEARTBEAT_FAILURES} retries")
 
-    def register_model(self):
+    async def register_model(self):
         try:
             register_data = ModelRegisterRequest(
                 id=f"reg-{shortuuid.uuid()}",
@@ -101,7 +100,7 @@ class BaseModelServer:
                 server_url=self.model_url,
                 server_function=self.MODEL_FUNCTION
             ).parse2dict()
-            response = self.client.post(f"http://{ServerConfig.REGISTER_URL}", json=register_data)
+            response = await self.client.post(f"http://{ServerConfig.REGISTER_URL}", json=register_data)
             response.raise_for_status()
             if response.json().get("state", False):
                 # 启动心跳
@@ -116,17 +115,17 @@ class BaseModelServer:
 
     def init_register_and_heartbeat(self):
         if self.register_flag:
-            self.send_heartbeat()
+            asyncio.run(self.send_heartbeat())
         else:
-            self.register_model()
+            asyncio.run(self.register_model())
 
-    def run(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8001, log_level=logging.WARNING):
+    def run(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8001, log_level=logging.DEBUG):
         self.load_model()
         self.model_url = f"http://{host}:{port}"
-        self.client = httpx.Client(base_url=self.center_url,
-                                   headers={
-                                       "Content-Type": "application/json"
-                                   })
+        self.client = httpx.AsyncClient(base_url=self.center_url,
+                                        headers={
+                                            "Content-Type": "application/json"
+                                        })
         self.heartbeat_scheduler.add_job(self.init_register_and_heartbeat, "interval",
                                          max_instances=1,
                                          seconds=ServerConfig.HEARTBEAT_RATE),
@@ -134,26 +133,28 @@ class BaseModelServer:
         app.add_api_route(path=ServerConfig.KILL_SIGNAL_URL,
                           endpoint=self.receive_kill_signal,
                           methods=["POST"])
-        app.add_exception_handler(GlobalException, global_exception_handler)
-        app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
+        app.add_exception_handler(GlobalException, global_exception_handler(self.logger))
+        app.add_exception_handler(RequestValidationError, request_validation_exception_handler(self.logger))
+        self.logger.info(f"run server {self.model} from {self.model_name_or_path} at {self.model_url}")
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
-    async def receive_kill_signal(self, request: KillSignalRequest):
+    def receive_kill_signal(self, request: KillSignalRequest):
         if request.session_id is None:
-            raise GlobalException("session_id can't be None")
+            raise GlobalException("session_id can't be None", extra=str(request.parse2dict()))
         if request.model is None:
-            raise GlobalException("model can't be None")
+            raise GlobalException("model can't be None", extra=str(request.parse2dict()))
         if request.model != self.model_name:
-            raise GlobalException(f"model must be {self.model_name}")
+            raise GlobalException(f"model must be {self.model_name}", extra=str(request.parse2dict()))
 
         if isinstance(request.session_id, str):
-            self.sessions_to_kill.add(request.session_id)
+            if request.session_id in self.sessions:
+                self.sessions_to_kill.add(request.session_id)
         elif isinstance(request.session_id, list):
-            self.sessions_to_kill.update(request.session_id)
+            self.sessions_to_kill.update(self.sessions.intersection(request.session_id))
         else:
-            raise GlobalException("session_id must be str or list")
+            raise GlobalException("session_id must be str or list", extra=str(request.parse2dict()))
         return BaseResponse().success()
-    
+
     def load_model(self):
         # cpu_offloading 是指在加载大型模型时, 将部分计算从CPU转移到GPU或其他加速器上进行,
         # 以减轻CPU的计算压力, 提高系统的总体执行效率。
@@ -187,11 +188,12 @@ class BaseModelServer:
 
     @abstractmethod
     def build_logger(self):
-        return Logger(None, "base", is_control=True)
+        return Logger.build_logger(ServerConfig.LOG_DIR, self.model_name)
 
     @exception_handler
-    async def completion(self, prompt: Union[str, List[str]], params: CompletionParams) -> CompletionResponse:
+    def completion(self, prompt: Union[str, List[str]], params: CompletionParams) -> CompletionResponse:
         session_id = params.id
+        self.sessions.add(session_id)
         n = params.n
         prompt_size = len(prompt) if isinstance(prompt, list) else 1
         response = CompletionResponse(
@@ -223,21 +225,26 @@ class BaseModelServer:
                 choice.usage = temp_choice.usage
                 if temp_choice.finish_reason and len(temp_choice.finish_reason) != 0:
                     response.choices[index].end = int(datetime.now().timestamp() * 1000)
-            print(self.sessions_to_kill)
             if session_id in self.sessions_to_kill:
-                self.logger.info(f"kill session {session_id}, generate stop")
+                self.logger.info(f"kill session {session_id}, completion stop")
                 self.sessions_to_kill.discard(session_id)
                 temp_response.interrupted = True
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         if temp_response.interrupted:
-            raise GlobalException("completion is killed.")
+            raise GlobalException("completion is killed.", extra=str({
+                "prompt": prompt,
+                "params": params.parse2dict()
+            }))
+        self.sessions.discard(session_id)
+        self.logger.text_completion(response.model_dump_json())
         return response
 
     @exception_handler
-    async def chat_completion(self, messages: List[ChatMessage], params: CompletionParams) -> ChatCompletionResponse:
+    def chat_completion(self, messages: List[ChatMessage], params: CompletionParams) -> ChatCompletionResponse:
         session_id = params.id
+        self.sessions.add(session_id)
         message_template = GlobalFactory.get_chat_template(params.model)
         n = params.n
         params.stop_str.extend(message_template.stop_str)
@@ -274,12 +281,17 @@ class BaseModelServer:
                 if temp_choice.finish_reason and len(temp_choice.finish_reason) != 0:
                     response.choices[index].end = int(datetime.now().timestamp() * 1000)
             if session_id in self.sessions_to_kill:
-                self.logger.info(f"kill session {session_id}, generate stop")
+                self.logger.info(f"kill session {session_id}, chat completion stop")
                 self.sessions_to_kill.discard(session_id)
                 temp_response.interrupted = True
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
         if temp_response.interrupted:
-            raise GlobalException("chat completion is killed.")
+            raise GlobalException("chat completion is killed.", extra=str({
+                "messages": messages,
+                "params": params.parse2dict()
+            }))
+        self.sessions.discard(session_id)
+        self.logger.chat_completion(response.model_dump_json())
         return response

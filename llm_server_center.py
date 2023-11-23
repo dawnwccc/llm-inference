@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Dict, Any, Union, List
 
 from fastapi.exceptions import RequestValidationError
-
+from serve.utils.util import get_real_ip, check_crawler
 from serve.entity.exception import GlobalException, global_exception_handler, request_validation_exception_handler, \
     exception_handler
 from serve.utils.logger import Logger
@@ -46,8 +46,9 @@ class LLMServerCenter:
         app.add_api_route(path=ServerConfig.HEARTBEAT_URL,
                           endpoint=self.receive_heartbeat_request,
                           methods=["POST"])
-        app.add_exception_handler(GlobalException, global_exception_handler)
-        app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
+        app.add_exception_handler(GlobalException, global_exception_handler(self.logger))
+        app.add_exception_handler(RequestValidationError, request_validation_exception_handler(self.logger))
+        self.logger.info(f"run server center at {host}:{port}")
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
     def receive_register_request(self, request: ModelRegisterRequest):
@@ -91,35 +92,45 @@ class LLMServerCenter:
     def check_request(self, params: Dict[str, Any]):
         model = params.get("model", None)
         if model is None:
-            raise GlobalException("model is required.")
+            raise GlobalException("model is required.", extra=str(params))
         if model not in self.server_list:
-            raise GlobalException(message=f"model {model} is not available")
+            raise GlobalException(message=f"model {model} is not available", extra=str(params))
+        if self.server_list[model]["state"] == "offline":
+            raise GlobalException(message=f"model {model} is offline", extra=str(params))
 
     @exception_handler
     async def completions(self, params: Dict[str, Any]):
         self.check_request(params)
         model = params.get("model")
-        response = httpx.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
-                              json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
+                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+        self.logger.info(f"IP:{params['ip']} request completions.")
         return response.json()
 
     @exception_handler
     async def chat_completions(self, params: Dict[str, Any]):
         self.check_request(params)
         model = params.get("model")
-        response = httpx.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
-                              json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
+                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+        self.logger.info(f"IP:{params['ip']} request chat completions.")
         return response.json()
 
     @exception_handler
     async def send_kill_signal(self, model: str, session_id: Union[str, List[str]]):
         if model not in self.server_list:
-            raise GlobalException(f"model {model} can't be killed.")
-        response = httpx.post(url=f"{self.server_list[model]['server_url']}{ServerConfig.KILL_SIGNAL_URL}",
-                              json={
-                                  "model": model,
-                                  "session_id": session_id
-                              }, timeout=ServerConfig.SESSION_TIMEOUT)
+            raise GlobalException(f"model {model} can't be killed.", extra=str({
+                "model": model,
+                "session": session_id
+            }))
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=f"{self.server_list[model]['server_url']}{ServerConfig.KILL_SIGNAL_URL}",
+                                         json={
+                                             "model": model,
+                                             "session_id": session_id
+                                         }, timeout=ServerConfig.SESSION_TIMEOUT)
         return response.json()
 
 
@@ -140,21 +151,28 @@ def get_model_status():
 
 @app.post("/v1/completions")
 async def completions(request: Request):
-    # TODO: analysis headers to avoid to spiders
+    if check_crawler(request):
+        return BaseResponse().success()
     params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
     return await server.completions(params)
 
 
 @app.post("/v1/chat/completions")
 async def completions(request: Request):
-    # TODO: analysis headers to avoid to spiders
+    if check_crawler(request):
+        return BaseResponse().success()
     params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
     return await server.chat_completions(params)
 
 
 @app.post(ServerConfig.KILL_SIGNAL_URL)
 async def kill_completion(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
     params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
     model = params.get("model", None)
     session_id = params.get("session_id", None)
     if model is None:

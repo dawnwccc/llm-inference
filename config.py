@@ -3,6 +3,8 @@ import os
 
 class ServerConfig:
     """配置类"""
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
     SERVER_CENTER_URL = "127.0.0.1"
     SERVER_CENTER_PORT = 8000
     # 最大超时时间

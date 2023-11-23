@@ -12,22 +12,22 @@ app = FastAPI()
 
 
 @app.post("/v1/completions")
-async def completion(request: CompletionRequest):
+def completion(request: CompletionRequest):
     prompt = request.prompt
     params = CompletionParams(**request.parse2dict())
     if not prompt:
         raise GlobalException("prompt can't be empty")
-    out = await server.completion(prompt, params)
+    out = server.completion(prompt, params)
     return BaseResponse().success().set_data(out)
 
 
 @app.post("/v1/chat/completions")
-async def chat_completion(request: ChatCompletionRequest):
+def chat_completion(request: ChatCompletionRequest):
     messages = request.messages
     params = CompletionParams(**request.parse2dict())
     if not messages:
         raise GlobalException("messages can't be empty")
-    out = await server.chat_completion(messages, params)
+    out = server.chat_completion(messages, params)
     return BaseResponse().success().set_data(out)
 
 
