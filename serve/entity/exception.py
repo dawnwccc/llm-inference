@@ -1,5 +1,5 @@
 from typing import Union
-
+import traceback
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
@@ -49,7 +49,9 @@ def exception_handler(func):
             raise GlobalException(message=";\n".join(msg), code=HTTPStatusCode.ERROR, extra=str(exp))
         except BaseException as exp:
             # print(exp)
-            raise GlobalException(message="internal system error", code=HTTPStatusCode.ERROR, extra=str(exp))
+            trace = traceback.format_exc()
+            print(trace)
+            raise GlobalException(message="internal system error", code=HTTPStatusCode.ERROR, extra=trace)
 
     return wrapper
 

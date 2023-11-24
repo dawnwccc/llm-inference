@@ -72,6 +72,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
     #     is_stopped = False
     #     finish_reason = None
     #     output_ids = inputs["input_ids"][0] if echo else []
+    #     print(inputs["input_ids"])
     #     for total_ids in self.model.stream_generate(**inputs, eos_token_id=stop_token_ids, **gen_kwargs):
     #         current_token = total_ids.tolist()[0][-1]
     #
@@ -143,7 +144,10 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
 
         logits_processor = default_logits_processor(temperature, repetition_penalty, top_p, top_k)
         logits_processor.append(ChatGLMInvalidScoreLogitsProcessor())
-        input_ids, attention_mask, position_ids = self.tokenizer([prompt], return_tensors="pt").to(device)
+        inputs = self.tokenizer([prompt], return_tensors="pt")
+        input_ids = inputs.input_ids
+        attention_mask = inputs.attention_mask
+        position_ids = inputs.position_ids
         input_ids_length = len(input_ids[0])
         if input_ids_length >= self.model.config.seq_length:
             raise GlobalException(f"Input length larger than {self.model.config.seq_length}")
@@ -161,7 +165,11 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    use_cache=True
+                    use_cache=True,
+                    # return_dict=True,
+                    # output_attentions=False,
+                    # output_hidden_states=False,
+                    return_last_logit=True
                 )
             else:
                 out = self.model(
@@ -169,7 +177,11 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     past_key_values=past_key_values,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    use_cache=True
+                    use_cache=True,
+                    return_dict=True,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_last_logit=True
                 )
             past_key_values = out.past_key_values
             logits = out.logits
@@ -231,12 +243,22 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                 logprobs_text_offsets.append(current_token_text_offset)
                 logprobs_top_logprobs.append(top_logprobs)
                 current_token = max_token_id
+            # else:
+            if temperature < 1e-5 or top_p < 1e-8:
+                current_token = int(torch.argmax(last_token_logits))
             else:
-                if temperature < 1e-5 or top_p < 1e-8:
-                    current_token = int(torch.argmax(last_token_logits))
-                else:
-                    probs = torch.softmax(last_token_logits, dim=-1)
-                    current_token = int(torch.multinomial(probs, num_samples=1))
+                probs = torch.softmax(last_token_logits, dim=-1)
+                current_token = int(torch.multinomial(probs, num_samples=1))
+            attention_mask = torch.cat(
+                [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+            )
+            new_position_id = position_ids[..., -1:].clone()
+            new_position_id += 1
+            # position_ids = torch.cat(
+            #     [position_ids, new_position_id], dim=-1
+            # )
+            position_ids = torch.as_tensor([[new_position_id]], device=device)
+
             if token_index < max_new_tokens:
                 token_index += 1
                 output_ids.append(current_token)
