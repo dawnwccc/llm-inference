@@ -135,7 +135,7 @@ class BaseModelServer:
                           methods=["POST"])
         app.add_exception_handler(GlobalException, global_exception_handler(self.logger))
         app.add_exception_handler(RequestValidationError, request_validation_exception_handler(self.logger))
-        self.logger.info(f"run server {self.model} from {self.model_name_or_path} at {self.model_url}")
+        self.logger.info(f"run server {self.model_name} from {self.model_name_or_path} at {self.model_url}")
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
     def receive_kill_signal(self, request: KillSignalRequest):
