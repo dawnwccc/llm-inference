@@ -6,7 +6,7 @@ import torch
 
 from serve.entity.exception import GlobalException
 from serve.entity.inference import TempCompletionResponse, CompletionParams
-from serve.entity.protocol import CompletionChoiceResponse, CompletionUsageInfo, ChatMessage
+from serve.entity.protocol import CompletionChoiceResponse, CompletionUsageInfo, ChatMessage, CompletionLogprobs
 from serve.utils.chat_template import ChatTemplate
 from serve.utils.factory import register_model_function
 from serve.utils.inference import check_stop_str, default_logits_processor
@@ -132,83 +132,111 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
             self.tokenizer.get_command("<|user|>"),
         ]
         stop_token_ids.extend(eos_token_id)
-        stop_token_id_tensor = torch.tensor(stop_token_ids).to(device)
+        # 是否输出logprobs
+        logprobs = params.logprobs
+        is_logprobs = logprobs is not None
+        current_token_text_offset = len_prompt
+        logprobs_text_offsets = []
+        logprobs_token_logprobs = []
+        logprobs_tokens = []
+        logprobs_top_logprobs = []
+
         logits_processor = default_logits_processor(temperature, repetition_penalty, top_p, top_k)
         logits_processor.append(ChatGLMInvalidScoreLogitsProcessor())
         input_ids, attention_mask, position_ids = self.tokenizer([prompt], return_tensors="pt").to(device)
         input_ids_length = len(input_ids[0])
-        model_kwargs = {
-            "max_length": max_new_tokens + input_ids_length + 1,
-            "do_sample": True if temperature > 1e-5 else False,
-            "top_p": top_p,
-            "repetition_penalty": repetition_penalty,
-            "use_cache": True
-        }
         if input_ids_length >= self.model.config.seq_length:
             raise GlobalException(f"Input length larger than {self.model.config.seq_length}")
 
-        unfinished_sequences = input_ids.new(input_ids.shape[0]).fill_(1)
-        print(input_ids)
-        print(unfinished_sequences)
-        scores = None
+        output_ids = []
+        current_token = None
+        token_index = 0
         past_key_values = None
-        while True:
-            # forward pass to get next token
-            out = self.model(
-                input_ids=input_ids,
-                past_key_values=past_key_values,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                use_cache=True
-            )
-
+        is_stopped = False
+        is_interrupted = False
+        finish_reason = None
+        while not is_stopped and not is_interrupted:
+            if token_index == 0:
+                out = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    use_cache=True
+                )
+            else:
+                out = self.model(
+                    input_ids=torch.as_tensor([[current_token]], device=device),
+                    past_key_values=past_key_values,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    use_cache=True
+                )
             past_key_values = out.past_key_values
             logits = out.logits
 
+            # 计算prompt的logprobs
+            if echo and is_logprobs and token_index == 0:
+                prompt_token_offsets = 0
+                prompt_openai_logprobs = torch.log_softmax(logits[0], dim=-1)
+                _, indices = torch.topk(logits[0], logprobs, dim=-1)
+                for prompt_token_index in range(len(input_ids) - 1):
+                    prompt_next_token_index = prompt_token_index + 1
+                    prompt_next_token = input_ids[prompt_next_token_index]
+                    tokens = [tok.tolist() for tok in indices[prompt_next_token_index]]
+                    prompt_next_token_text = self.tokenizer.decode(prompt_next_token)
+                    top_logprobs = {}
+                    for token in tokens:
+                        token_text = self.tokenizer.decode(token)
+                        top_logprobs[token_text] = prompt_openai_logprobs[prompt_token_index, token].tolist()
+                    prompt_token_offsets += len(prompt_next_token_text)
+                    logprobs_tokens.append(prompt_next_token_text)
+                    logprobs_token_logprobs.append(
+                        prompt_openai_logprobs[prompt_token_index, prompt_next_token].tolist())
+                    logprobs_text_offsets.append(prompt_token_offsets)
+                    logprobs_top_logprobs.append(top_logprobs)
+
             if logits_processor:
-                last_token_logits = logits_processor(input_ids, logits[:, -1, :])
+                last_token_logits = logits_processor(
+                    torch.as_tensor([output_ids], device=logits.device).long(),
+                    logits[:, -1, :]
+                )[0]
             else:
-                last_token_logits = logits[:, -1, :]
+                last_token_logits = logits[0, -1, :]
 
-            if temperature < 1e-5 or top_p < 1e-8:
-                current_token = int(torch.argmax(last_token_logits))
+            if is_logprobs:
+                if temperature < 1e-5 or top_p < 1e-8:
+                    probs = last_token_logits
+                    _, indices = torch.topk(last_token_logits, logprobs)
+                else:
+                    probs = torch.softmax(last_token_logits, dim=-1)
+                    indices = torch.multinomial(probs, num_samples=logprobs)
+                tokens = [int(i) for i in indices.tolist()]
+                openai_logprobs = torch.log_softmax(logits[0, -1, :], dim=-1).tolist()
+                probs = probs.tolist()
+                top_logprobs = {}
+                max_token_probs = float("-inf")
+                max_token_id = None
+                max_token_text = None
+                for token in tokens:
+                    openai_logprobs_value = openai_logprobs[token]
+                    token_text = self.tokenizer.decode(token)
+                    top_logprobs[token_text] = openai_logprobs_value
+                    if probs[token] > max_token_probs:
+                        max_token_id = token
+                        max_token_text = token_text
+                        max_token_probs = probs[token]
+                current_token_text_offset += len(max_token_text)
+                logprobs_tokens.append(max_token_text)
+                logprobs_token_logprobs.append(top_logprobs[max_token_text])
+                logprobs_text_offsets.append(current_token_text_offset)
+                logprobs_top_logprobs.append(top_logprobs)
+                current_token = max_token_id
             else:
-                probs = torch.softmax(last_token_logits, dim=-1)
-                current_token = int(torch.multinomial(probs, num_samples=1))
-
-            # sample
-            probs = nn.functional.softmax(next_token_scores, dim=-1)
-            if generation_config.do_sample:
-                next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
-            else:
-                next_tokens = torch.argmax(probs, dim=-1)
-            # update generated ids, model inputs, and length for next step
-            input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
-            model_kwargs = self._update_model_kwargs_for_generation(
-                outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
-            )
-            unfinished_sequences = unfinished_sequences.mul(
-                next_tokens.tile(eos_token_id_tensor.shape[0], 1).ne(eos_token_id_tensor.unsqueeze(1)).prod(dim=0)
-            )
-            if return_past_key_values:
-                yield input_ids, outputs.past_key_values
-            else:
-                yield input_ids
-            # stop when each sentence is finished, or if we exceed the maximum length
-            if unfinished_sequences.max() == 0 or stopping_criteria(input_ids, scores):
-                break
-
-
-        if temperature > 1e-5:
-            gen_kwargs["temperature"] = temperature
-
-        token_index = 0
-        is_stopped = False
-        finish_reason = None
-        output_ids = inputs["input_ids"][0] if echo else []
-        for total_ids in self.model.stream_generate(**inputs, eos_token_id=stop_token_ids, **gen_kwargs):
-            current_token = total_ids.tolist()[0][-1]
-
+                if temperature < 1e-5 or top_p < 1e-8:
+                    current_token = int(torch.argmax(last_token_logits))
+                else:
+                    probs = torch.softmax(last_token_logits, dim=-1)
+                    current_token = int(torch.multinomial(probs, num_samples=1))
             if token_index < max_new_tokens:
                 token_index += 1
                 output_ids.append(current_token)
@@ -219,33 +247,43 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                 is_stopped = True
                 finish_reason = CompletionFinishReasonEnum.length
 
+            if current_token in stop_token_ids:
+                is_stopped = True
+                finish_reason = CompletionFinishReasonEnum.stop
+
             if token_index % stream_interval == 0 or is_stopped:
-                output = self.tokenizer.decode(output_ids)
-                output = chatglm_process_output(output)
+                output = self.tokenizer.decode(
+                    output_ids,
+                    skip_special_tokens=True,
+                    spaces_between_special_tokens=False,
+                    clean_up_tokenization_spaces=True,
+                )
                 if stop_str_list:
-                    is_stopped, output = check_stop_str(output, stop_str_list, len_prompt if echo else 0)
-                    if is_stopped:
+                    stop_str_stopped, output = check_stop_str(output, stop_str_list, len_prompt if echo else 0)
+                    if stop_str_stopped:
+                        is_stopped = True
                         finish_reason = CompletionFinishReasonEnum.stop
 
                 response = TempCompletionResponse(
-                    choices=[
-                        CompletionChoiceResponse(
-                            text=output,
-                            logprobs=None,
-                            usage=CompletionUsageInfo(
-                                prompt_tokens=input_ids_length,
-                                completion_tokens=token_index,
-                                total_tokens=input_ids_length + token_index
-                            ),
-                            finish_reason=finish_reason
-                        )
-                    ],
+                    choices=[CompletionChoiceResponse(
+                        text=output,
+                        logprobs=None if not is_logprobs else CompletionLogprobs(
+                            text_offset=logprobs_text_offsets,
+                            token_logprobs=logprobs_token_logprobs,
+                            tokens=logprobs_tokens,
+                            top_logprobs=logprobs_top_logprobs
+                        ),
+                        usage=CompletionUsageInfo(
+                            prompt_tokens=input_ids_length,
+                            completion_tokens=token_index,
+                            total_tokens=input_ids_length + token_index
+                        ),
+                        finish_reason=finish_reason
+                    )],
                     interrupted=False
                 )
                 yield response
                 is_interrupted = response.interrupted
-                if is_interrupted or is_stopped:
-                    break
         gc.collect()
         torch.cuda.empty_cache()
 

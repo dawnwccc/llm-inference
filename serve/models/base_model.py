@@ -265,23 +265,6 @@ class DefaultModelFunction(AbstractModelFunction):
                     )],
                     interrupted=False
                 )
-                # response = {
-                #     "choices": [{
-                #         "text": output,
-                #         "logprobs": None if not is_logprobs else {
-                #             "text_offset": logprobs_text_offsets,
-                #             "token_logprobs": logprobs_token_logprobs,
-                #             "tokens": logprobs_tokens,
-                #             "top_logprobs": logprobs_top_logprobs
-                #         },
-                #         "usage": {
-                #             "prompt_tokens": len(input_ids),
-                #             "completion_tokens": token_index,
-                #             "total_tokens": input_ids_length + token_index,
-                #         },
-                #         "finish_reason": finish_reason,
-                #     }]
-                # }
                 yield response
                 is_interrupted = response.interrupted
 
