@@ -177,7 +177,7 @@ class DefaultModelFunction(AbstractModelFunction):
         is_interrupted = False
         index = 0
 
-        while any(running_state) and not is_interrupted:
+        while (echo and is_logprobs and index == 0) or (any(running_state) and not is_interrupted):
             if index == 0:
                 input_ids = start_ids
             else:
@@ -199,6 +199,7 @@ class DefaultModelFunction(AbstractModelFunction):
                     past_key_values=past_key_values
                 )
                 logits = out.logits
+
             if index == 0:
                 raw_last_logits = torch.stack([
                     logits[i, last_valid_i - 1, :]
@@ -210,25 +211,22 @@ class DefaultModelFunction(AbstractModelFunction):
 
             # 计算prompt的logprobs
             if echo and is_logprobs and index == 0:
-                batch_raw_logprobs = torch.log_softmax(logits, dim=-1)
-                _, batch_token_ids = torch.topk(batch_raw_logprobs, logprobs, dim=-1)
+                batch_raw_logprobs = torch.log_softmax(logits[:, :-1, :], dim=-1)
+                batch_top_tokens_logprobs, batch_sample_output_ids = torch.topk(batch_raw_logprobs, logprobs, dim=-1)
                 # 第一个token没有logprobs
-                batch_sample_output_ids = batch_token_ids[:, 1:, :]
                 batch_prompt_tokens_probs = torch.gather(
-                    batch_raw_logprobs[:, :-1, :], dim=-1, index=batch_input_ids.unsqueeze(2)[:, 1:, :]
-                )
-                batch_top_tokens_logprobs = torch.gather(
-                    batch_raw_logprobs[:, :-1, :], dim=-1,
-                    index=batch_sample_output_ids
+                    batch_raw_logprobs, dim=-1, index=batch_input_ids.unsqueeze(2)[:, 1:, :]
                 )
                 for i in range(task_total):
                     batch_logprobs[i]["token_logprobs"] = batch_prompt_tokens_probs[i, :batch_input_ids_length[i],
                                                           0].tolist()
+                    # 去掉第一个词和最后一个词
                     top_tokens = [
                         self.tokenizer.batch_decode(batch_sample_output_ids[i, j, :])
+                        # 去掉第一个和最后一个
                         for j in range(batch_input_ids_length[i] - 1)
                     ]
-                    top_tokens_logprobs = batch_top_tokens_logprobs[i, :batch_input_ids_length[i], :].tolist()
+                    top_tokens_logprobs = batch_top_tokens_logprobs[i, :batch_input_ids_length[i] - 1, :].tolist()
                     for toks, toks_logprobs in zip(top_tokens, top_tokens_logprobs):
                         top_logprobs = dict(zip(toks, toks_logprobs))
                         batch_logprobs[i]["top_logprobs"].append(top_logprobs)
@@ -247,8 +245,8 @@ class DefaultModelFunction(AbstractModelFunction):
             # next_token_ids = None
             if is_logprobs:
                 if temperature < 1e-5 or top_p < 1e-8:
-                    _, batch_tokens_ids = torch.topk(last_token_logits, logprobs, dim=-1)
-                    next_tokens_ids = batch_tokens_ids[:, 0:1]
+                    _, batch_sample_output_ids = torch.topk(last_token_logits, logprobs, dim=-1)
+                    next_tokens_ids = batch_sample_output_ids[:, 0:1]
                 else:
                     # 随机采样, 取出采样结果中概率最大的 token
                     probs = torch.softmax(last_token_logits, dim=-1)
@@ -272,7 +270,6 @@ class DefaultModelFunction(AbstractModelFunction):
                     probs = torch.softmax(last_token_logits, dim=-1)
                     next_tokens_ids = torch.multinomial(probs, num_samples=1)
 
-            index += 1
             for i in range(task_total):
                 if not running_state[i]:
                     continue
@@ -281,7 +278,7 @@ class DefaultModelFunction(AbstractModelFunction):
 
             if index % stream_interval == 0 or not all(running_state):
                 for i in range(task_total):
-                    if not running_state[i]:
+                    if not running_state[i] and index != 0:
                         continue
                     message = stopping_criteria(batch_output_ids[i], last_token_logits)
                     # 必须放在 stopping_criteria 之后，因为在该方法中会修改output_ids
@@ -291,18 +288,37 @@ class DefaultModelFunction(AbstractModelFunction):
                         spaces_between_special_tokens=False,
                         clean_up_tokenization_spaces=True,
                     )
-                    output_tokens_str = list(filter(None, output_tokens_str))
+                    output_tokens_flag = [
+                        not (s in self.tokenizer.special_tokens)
+                        for s in output_tokens_str
+                    ]
+                    output_tokens_str = [
+                        token_str
+                        for flag, token_str in zip(output_tokens_flag, output_tokens_str)
+                        if flag
+                    ]
                     batch_output[i] = "".join(output_tokens_str)
                     if message.stop:
                         running_state[i] = False
                         finish_reason[i] = message.message
-                        # 计算logprobs: text_offset
-                        output_tokens_str_length = [len(token_str) for token_str in output_tokens_str]
-                        batch_logprobs[i]["tokens"] = output_tokens_str
-                        batch_logprobs[i]["text_offset"] = [0] + list(accumulate(output_tokens_str_length))[:-1]
-                        batch_logprobs[i]["token_logprobs"] = batch_logprobs[i]["token_logprobs"][
-                                                              :len(output_tokens_str)]
-                        batch_logprobs[i]["top_logprobs"] = batch_logprobs[i]["top_logprobs"][:len(output_tokens_str)]
+                        if is_logprobs:
+                            if echo:
+                                output_tokens_flag = output_tokens_flag[1:]
+                            # 计算logprobs: text_offset
+                            output_tokens_str_length = [len(token_str) for flag, token_str in
+                                                        zip(output_tokens_flag, output_tokens_str) if flag]
+                            batch_logprobs[i]["tokens"] = output_tokens_str
+                            batch_logprobs[i]["text_offset"] = [0] + list(accumulate(output_tokens_str_length))[:-1]
+                            batch_logprobs[i]["token_logprobs"] = [
+                                tok_logprobs
+                                for flag, tok_logprobs in zip(output_tokens_flag, batch_logprobs[i]["token_logprobs"])
+                                if flag
+                            ]
+                            batch_logprobs[i]["top_logprobs"] = [
+                                top_logprobs
+                                for flag, top_logprobs in zip(output_tokens_flag, batch_logprobs[i]["top_logprobs"])
+                                if flag
+                            ]
 
                 response = TempCompletionResponse(
                     choices=[
@@ -318,15 +334,19 @@ class DefaultModelFunction(AbstractModelFunction):
                         )
                         for i in range(task_total)
                     ],
-                    interrupted=False
+                    interrupted=is_interrupted
                 )
                 yield response
                 is_interrupted = response.interrupted
             next_tokens_ids.to(device)
             new_mask = torch.tensor(running_state, dtype=torch.int8).unsqueeze(1).to(device)
             attention_mask = torch.cat([attention_mask, new_mask], dim=1)
+            # attention_mask = new_mask
+            if position_ids is not None:
+                position_ids = position_ids[:, -1:].clone() + 1
+            index += 1
 
-        del past_key_values, out, input_ids, attention_mask
+        del past_key_values, out, input_ids, attention_mask, position_ids
         gc.collect()
         torch.cuda.empty_cache()
 

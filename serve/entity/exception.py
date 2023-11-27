@@ -1,3 +1,4 @@
+import json
 from typing import Union
 import traceback
 from fastapi import HTTPException
@@ -12,27 +13,10 @@ from serve.utils.enums import HTTPStatusCode
 class GlobalException(Exception):
     """全局异常"""
 
-    def __init__(self, message: str, code: Union[HTTPStatusCode, int] = HTTPStatusCode.ERROR, extra: str = None):
+    def __init__(self, message: str, code: Union[HTTPStatusCode, int] = HTTPStatusCode.ERROR, extra: str | dict = None):
         self.message = message
         self.code = code
         self.extra = extra
-
-
-# def exception_handler(logger):
-#     def wrapper1(func):
-#         def wrapper2(*args, **kwargs):
-#             try:
-#                 return func(*args, **kwargs)
-#             except ValidationError as exp:
-#                 msg = [
-#                     f"""{e["msg"]}: type: {e["type"]}, loc: {e["loc"][-1]}"""
-#                     for e in exp.errors()
-#                 ]
-#                 raise GlobalException(message=";\n".join(msg), code=HTTPStatusCode.ERROR)
-#             except BaseException as exp:
-#                 raise GlobalException(message="internal system error", code=HTTPStatusCode.ERROR)
-#         return wrapper2
-#     return wrapper1
 
 
 def exception_handler(func):

@@ -3,7 +3,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from serve.utils.inference.batcher import batch_tokenize
 
-checkpoint = r"H:\Projects\Python\models\python258k"
+checkpoint = r"C:\Research\llm_code_quality_research\models\chatglm3-6b"
 device = "cuda"  # for GPU usage or "cpu" for CPU usage
 texts = [
     "def print_hello(",
@@ -11,7 +11,7 @@ texts = [
 ]
 
 tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
-input_ids = torch.as_tensor([4299, 3601, 62, 31373, 7], dtype=torch.int32)
+input_ids = torch.as_tensor([30910, 33030, 34797], dtype=torch.int32)
 print(input_ids)
 output = tokenizer.batch_decode(input_ids)
 print(output)

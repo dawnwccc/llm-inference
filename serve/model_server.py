@@ -214,6 +214,7 @@ class BaseModelServer:
             usage=CompletionUsageInfo()
         )
         temp_response: TempCompletionResponse = None
+        is_interrupted = False
         for temp_response in self.model_function.stream_completion(prompt, params, stream_interval=3):
             if temp_response is None:
                 break
@@ -229,16 +230,14 @@ class BaseModelServer:
                 self.logger.info(f"kill session {session_id}, completion stop")
                 self.sessions_to_kill.discard(session_id)
                 temp_response.interrupted = True
+                is_interrupted = True
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
-        if temp_response.interrupted:
-            raise GlobalException("completion is killed.", extra=str({
-                "prompt": prompt,
-                "params": params.parse2dict()
-            }))
         self.sessions.discard(session_id)
         self.logger.text_completion(response.model_dump_json())
+        if is_interrupted:
+            raise GlobalException("completion is killed.", extra=response.model_dump_json())
         return response
 
     @exception_handler
@@ -266,6 +265,7 @@ class BaseModelServer:
             usage=CompletionUsageInfo()
         )
         temp_response: TempCompletionResponse = None
+        is_interrupted = False
         for temp_response in self.model_function.stream_chat_completion(message_template,
                                                                         messages,
                                                                         params,
@@ -294,4 +294,6 @@ class BaseModelServer:
             }))
         self.sessions.discard(session_id)
         self.logger.chat_completion(response.model_dump_json())
+        if is_interrupted:
+            raise GlobalException("completion is killed.", extra=response.model_dump_json())
         return response
