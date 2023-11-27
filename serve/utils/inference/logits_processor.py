@@ -1,6 +1,8 @@
 from transformers import LogitsProcessor, add_start_docstrings
 import torch
 from transformers.generation.logits_process import LOGITS_PROCESSOR_INPUTS_DOCSTRING
+from transformers import LogitsProcessorList, TemperatureLogitsWarper, RepetitionPenaltyLogitsProcessor, \
+    TopPLogitsWarper, TopKLogitsWarper
 
 
 class ChatGLMInvalidScoreLogitsProcessor(LogitsProcessor):
@@ -59,3 +61,16 @@ class FrequencyAndPresencePenaltyLogitsProcessor(LogitsProcessor):
 
         scores.scatter_(1, input_ids, score)
         return scores
+
+
+def default_logits_processor(
+        temperature: float, repetition_penalty: float, top_p: float
+) -> LogitsProcessorList:
+    processor_list = LogitsProcessorList()
+    if temperature >= 1e-5 and temperature != 1.0:
+        processor_list.append(TemperatureLogitsWarper(temperature))
+    if repetition_penalty > 1.0:
+        processor_list.append(RepetitionPenaltyLogitsProcessor(repetition_penalty))
+    if 1e-8 <= top_p < 1.0:
+        processor_list.append(TopPLogitsWarper(top_p))
+    return processor_list

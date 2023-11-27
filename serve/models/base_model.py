@@ -1,7 +1,11 @@
 import gc
 from abc import ABC, abstractmethod
 from typing import Union, List, Dict, Any
-from serve.utils.inference import default_logits_processor, check_stop_str, batch_tokenize
+from itertools import accumulate
+from serve.entity.exception import GlobalException
+from serve.utils.inference.batcher import batch_tokenize
+from serve.utils.inference.logits_processor import default_logits_processor
+from serve.utils.inference.stopping_criteria import check_stop_str, default_stopping_criteria
 import torch
 from serve.utils.enums import CompletionFinishReasonEnum
 from serve.utils.chat_template import ChatTemplate
@@ -19,39 +23,74 @@ class AbstractModelFunction:
         self.model = model
         self.device = device
         self.context_length = context_length
+        # 检查模型是否含有pad_token
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.add_special_tokens({
+                "pad_token": "<PAD>"
+            })
+            if self.model.config.pad_token_id is None:
+                self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
     def stream_completion(
             self, prompt: Union[str, List[str]], params: CompletionParams, stream_interval: int = 2
     ) -> TempCompletionResponse:
         """流式文本补全"""
         # TODO: 判断设备使用情况
+        device = self.device
         n = params.n
-        if n == 1:
-            if isinstance(prompt, str):
-                return self.single_stream_completion(prompt, params, self.device, stream_interval)
-            elif isinstance(prompt, list) and len(prompt) == 1:
-                return self.single_stream_completion(prompt[0], params, self.device, stream_interval)
-        return self.batch_stream_completion(prompt, params, self.device, stream_interval)
+        prompts, (input_ids, attention_mask, position_ids) = batch_tokenize(
+            prompt=prompt, n=n, device=device,
+            tokenize_func=self.tokenizer,
+            pad_token_id=self.tokenizer.pad_token_id
+
+        )
+        return self._completion(
+            prompts=prompts,
+            batch_input_ids=input_ids,
+            params=params,
+            device=device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            stream_interval=stream_interval
+        )
 
     @abstractmethod
-    def single_stream_completion(
-            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
+    def _completion(
+            self,
+            prompts: List[str],
+            batch_input_ids: Union[torch.Tensor, torch.LongTensor],
+            params: CompletionParams,
+            device: str,
+            attention_mask: Union[torch.Tensor, torch.LongTensor] = None,
+            position_ids: Union[torch.Tensor, torch.LongTensor] = None,
+            stream_interval: int = -1
     ) -> TempCompletionResponse:
-        """流式文本补全"""
-        pass
-
-    @abstractmethod
-    def batch_stream_completion(
-            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
-    ) -> TempCompletionResponse:
-        """批次文本补全"""
-        pass
+        """文本补全"""
+        raise NotImplementedError("未实现的 completion 方法")
 
     def stream_chat_completion(
-            self, chat_template: ChatTemplate, messages: List[ChatMessage], params: CompletionParams, stream_interval: int = 2
+            self, chat_template: ChatTemplate, messages: List[ChatMessage], params: CompletionParams,
+            stream_interval: int = 2
     ) -> TempCompletionResponse:
         prompt = chat_template.complete_message(messages)
-        return self.stream_completion(prompt, params, stream_interval)
+        # TODO: 判断设备使用情况
+        device = self.device
+        n = params.n
+        prompts, (input_ids, attention_mask, position_ids) = batch_tokenize(
+            prompt=prompt, n=n, device=device,
+            tokenize_func=self.tokenizer,
+            pad_token_id=self.tokenizer.pad_token_id
+
+        )
+        return self._completion(
+            prompts=prompts,
+            batch_input_ids=input_ids,
+            params=params,
+            device=device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            stream_interval=stream_interval
+        )
 
     @abstractmethod
     def embedding(self):
@@ -68,255 +107,58 @@ class DefaultModelFunction(AbstractModelFunction):
         super().__init__(tokenizer, model, device, context_length)
 
     @torch.inference_mode()
-    def single_stream_completion(
-            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
-    ) -> TempCompletionResponse:
-        # 初始化参数
-        len_prompt = len(prompt)
-        temperature = params.temperature
-        repetition_penalty = params.repetition_penalty
-        top_p = params.top_p
-        top_k = params.top_k
-        max_new_tokens = params.max_tokens
-        stop_str_list = params.stop_str
-        # is or not print prompt
-        echo = params.echo
-        stop_token_ids = params.stop_token_ids
-        if self.tokenizer.eos_token_id not in stop_token_ids:
-            stop_token_ids.append(self.tokenizer.eos_token_id)
-        # 是否输出logprobs
-        logprobs = params.logprobs
-        is_logprobs = logprobs is not None
-        current_token_text_offset = len_prompt
-        logprobs_text_offsets = []
-        logprobs_token_logprobs = []
-        logprobs_tokens = []
-        logprobs_top_logprobs = []
-
-        # get logits processor
-        logits_processor = default_logits_processor(temperature, repetition_penalty, top_p, top_k)
-
-        input_ids = self.tokenizer(prompt).input_ids
-        input_ids_length = len(input_ids)
-        output_ids = list(input_ids) if echo else []
-
-        if self.model.config.is_encoder_decoder:
-            input_ids = input_ids[-self.context_length:]
-        else:
-            input_ids = input_ids[-(self.context_length - max_new_tokens - 1):]
-
-        encoder_output = None
-        if self.model.config.is_encoder_decoder:
-            encoder_output = self.model.encoder(
-                input_ids=torch.as_tensor([input_ids], device=self.device)
-            )[0]
-            start_ids = torch.as_tensor(
-                [[self.model.generation_config.decoder_start_token_id]],
-                dtype=torch.int64,
-                device=self.device,
-            )
-        else:
-            start_ids = torch.as_tensor(
-                [input_ids],
-                device=device,
-            )
-
-        past_key_values = None
-        current_token = None
-        token_index = 0
-        is_stopped = False
-        is_interrupted = False
-        finish_reason = None
-        while not is_stopped and not is_interrupted:
-            if token_index == 0:
-                if self.model.config.is_encoder_decoder:
-                    out = self.model.decoder(
-                        input_ids=start_ids,
-                        encoder_hidden_states=encoder_output,
-                        use_cache=True,
-                    )
-                    logits = self.model.lm_head(out[0])
-                else:
-                    out = self.model(start_ids, use_cache=True)
-                    logits = out.logits
-            else:
-                if self.model.config.is_encoder_decoder:
-                    out = self.model.decoder(
-                        input_ids=torch.as_tensor([[current_token]], device=device),
-                        encoder_hidden_states=encoder_output,
-                        use_cache=True,
-                        past_key_values=past_key_values
-                    )
-                    logits = self.model.lm_head(out[0])
-                else:
-                    out = self.model(
-                        input_ids=torch.as_tensor([[current_token]], device=device),
-                        use_cache=True,
-                        past_key_values=past_key_values
-                    )
-                    logits = out.logits
-            past_key_values = out.past_key_values
-
-            # 计算prompt的logprobs
-            if echo and is_logprobs and token_index == 0:
-                prompt_token_offsets = 0
-                prompt_openai_logprobs = torch.log_softmax(logits[0], dim=-1)
-                _, indices = torch.topk(logits[0], logprobs, dim=-1)
-                for prompt_token_index in range(len(input_ids) - 1):
-                    prompt_next_token_index = prompt_token_index + 1
-                    prompt_next_token = input_ids[prompt_next_token_index]
-                    tokens = [tok.tolist() for tok in indices[prompt_next_token_index]]
-                    prompt_next_token_text = self.tokenizer.decode(prompt_next_token)
-                    top_logprobs = {}
-                    for token in tokens:
-                        token_text = self.tokenizer.decode(token)
-                        top_logprobs[token_text] = prompt_openai_logprobs[prompt_token_index, token].tolist()
-                    prompt_token_offsets += len(prompt_next_token_text)
-                    logprobs_tokens.append(prompt_next_token_text)
-                    logprobs_token_logprobs.append(
-                        prompt_openai_logprobs[prompt_token_index, prompt_next_token].tolist())
-                    logprobs_text_offsets.append(prompt_token_offsets)
-                    logprobs_top_logprobs.append(top_logprobs)
-
-            if logits_processor:
-                last_token_logits = logits_processor(
-                    torch.as_tensor([output_ids], device=logits.device).long(),
-                    logits[:, -1, :]
-                )[0]
-            else:
-                last_token_logits = logits[0, -1, :]
-
-            if is_logprobs:
-                if temperature < 1e-5 or top_p < 1e-8:
-                    probs = last_token_logits
-                    _, indices = torch.topk(last_token_logits, logprobs)
-                else:
-                    probs = torch.softmax(last_token_logits, dim=-1)
-                    indices = torch.multinomial(probs, num_samples=logprobs)
-                tokens = [int(i) for i in indices.tolist()]
-                openai_logprobs = torch.log_softmax(logits[0, -1, :], dim=-1).tolist()
-                probs = probs.tolist()
-                top_logprobs = {}
-                max_token_probs = float("-inf")
-                max_token_id = None
-                max_token_text = None
-                for token in tokens:
-                    openai_logprobs_value = openai_logprobs[token]
-                    token_text = self.tokenizer.decode(token)
-                    top_logprobs[token_text] = openai_logprobs_value
-                    if probs[token] > max_token_probs:
-                        max_token_id = token
-                        max_token_text = token_text
-                        max_token_probs = probs[token]
-                current_token_text_offset += len(max_token_text)
-                logprobs_tokens.append(max_token_text)
-                logprobs_token_logprobs.append(top_logprobs[max_token_text])
-                logprobs_text_offsets.append(current_token_text_offset)
-                logprobs_top_logprobs.append(top_logprobs)
-                current_token = max_token_id
-            else:
-                if temperature < 1e-5 or top_p < 1e-8:
-                    current_token = int(torch.argmax(last_token_logits))
-                else:
-                    probs = torch.softmax(last_token_logits, dim=-1)
-                    current_token = int(torch.multinomial(probs, num_samples=1))
-            if token_index < max_new_tokens:
-                token_index += 1
-                output_ids.append(current_token)
-                if token_index == max_new_tokens:
-                    is_stopped = True
-                    finish_reason = CompletionFinishReasonEnum.length
-            else:
-                is_stopped = True
-                finish_reason = CompletionFinishReasonEnum.length
-
-            if current_token in stop_token_ids:
-                is_stopped = True
-                finish_reason = CompletionFinishReasonEnum.stop
-
-            if token_index % stream_interval == 0 or is_stopped:
-                output = self.tokenizer.decode(
-                    output_ids,
-                    skip_special_tokens=True,
-                    spaces_between_special_tokens=False,
-                    clean_up_tokenization_spaces=True,
-                )
-                if stop_str_list:
-                    stop_str_stopped, output = check_stop_str(output, stop_str_list, len_prompt if echo else 0)
-                    if stop_str_stopped:
-                        is_stopped = True
-                        finish_reason = CompletionFinishReasonEnum.stop
-
-                response = TempCompletionResponse(
-                    choices=[CompletionChoiceResponse(
-                        text=output,
-                        logprobs=None if not is_logprobs else CompletionLogprobs(
-                            text_offset=logprobs_text_offsets,
-                            token_logprobs=logprobs_token_logprobs,
-                            tokens=logprobs_tokens,
-                            top_logprobs=logprobs_top_logprobs
-                        ),
-                        usage=CompletionUsageInfo(
-                            prompt_tokens=input_ids_length,
-                            completion_tokens=token_index,
-                            total_tokens=input_ids_length + token_index
-                        ),
-                        finish_reason=finish_reason
-                    )],
-                    interrupted=False
-                )
-                yield response
-                is_interrupted = response.interrupted
-
-        del past_key_values, out
-        gc.collect()
-        torch.cuda.empty_cache()
-
-    @torch.inference_mode()
-    def batch_stream_completion(
-            self, prompt: Union[str, List[str]], params: CompletionParams, device: str, stream_interval: int = 2
-    ) -> TempCompletionResponse:
+    def _completion(self, prompts: List[str], batch_input_ids: Union[torch.Tensor, torch.LongTensor],
+                    params: CompletionParams, device: str, attention_mask: Union[torch.Tensor, torch.LongTensor] = None,
+                    position_ids: Union[torch.Tensor, torch.LongTensor] = None,
+                    stream_interval: int = -1) -> TempCompletionResponse:
         # 初始化参数
         temperature = params.temperature
         repetition_penalty = params.repetition_penalty
         top_p = params.top_p
-        top_k = params.top_k
         max_new_tokens = params.max_tokens
         stop_str_list = params.stop_str
-        # is or not print prompt
+        max_length = batch_input_ids.shape[1] + max_new_tokens
+        # 是否打印提示词
         echo = params.echo
-        stop_token_ids = params.stop_token_ids
-        if self.tokenizer.eos_token_id not in stop_token_ids:
-            stop_token_ids.append(self.tokenizer.eos_token_id)
-        n = params.n
-        prompts, (input_ids, attention_mask) = batch_tokenize(self.tokenizer, prompt, n, device)
-        task_total = len(input_ids)
-        batch_prompt_length = [len(p[0]) for p in prompts]
+        stop_token_ids = [torch.as_tensor([token_ids], device=device) for token_ids in params.stop_token_ids]
+        if self.tokenizer.eos_token_id not in params.stop_token_ids:
+            stop_token_ids.append(torch.as_tensor([self.tokenizer.eos_token_id], device=device))
+        for stop_str in stop_str_list:
+            stop_token_ids.append(self.tokenizer(stop_str, return_tensors="pt").input_ids[0].to(device))
+        # 批量任务处理
+        task_total = len(batch_input_ids)
         batch_input_ids_length = [sum(attn_mask.tolist()) for attn_mask in attention_mask]
-        batch_output_ids = [list(input_ids[i]) if echo else [] for i in range(task_total)]
+        batch_output_ids = [input_ids for input_ids in batch_input_ids] if echo else \
+            [torch.tensor([], dtype=torch.int32) for _ in range(task_total)]
+        batch_output = prompts if echo else [""] * task_total
         # 是否输出logprobs
         logprobs = params.logprobs
         is_logprobs = logprobs is not None
+        # [batch, tokens, token_ids]
+        batch_sample_output_ids = []
         batch_logprobs = [{
-            "current_token_text_offset": batch_prompt_length[i],
             "text_offset": [],
             "tokens": [],
             "token_logprobs": [],
             "top_logprobs": []
-        } for i in range(task_total)]
+        } for _ in range(task_total)]
 
         # construct logits processor
-        logits_processor = default_logits_processor(temperature, repetition_penalty, top_p, top_k)
+        logits_processor = default_logits_processor(temperature, repetition_penalty, top_p)
+        # construct stopping criteria
+        stopping_criteria = default_stopping_criteria(max_length, stream_interval, 60 * 5,
+                                                      stop_token_ids,
+                                                      start_index=0 if echo else batch_input_ids.shape[1])
 
         if self.model.config.is_encoder_decoder:
-            input_ids = input_ids[-self.context_length:]
+            batch_input_ids = batch_input_ids[:, -self.context_length:]
         else:
-            input_ids = input_ids[-(self.context_length - max_new_tokens - 1):]
+            batch_input_ids = batch_input_ids[:, -(self.context_length - max_new_tokens - 1):]
 
         encoder_output = None
         if self.model.config.is_encoder_decoder:
             encoder_output = self.model.encoder(
-                input_ids=torch.as_tensor(input_ids, device=device)
+                input_ids=batch_input_ids
             )[0]
             start_ids = torch.as_tensor(
                 [[self.model.generation_config.decoder_start_token_id]],
@@ -324,215 +166,167 @@ class DefaultModelFunction(AbstractModelFunction):
                 device=device,
             )
         else:
-            start_ids = torch.as_tensor(
-                input_ids,
-                device=device,
-            )
+            start_ids = batch_input_ids
 
-        current_token = None
-        token_index = [0 for _ in range(task_total)]
+        # [batch, tokens]
+        next_tokens_ids = None
+        token_index = [0] * task_total
         past_key_values = None
-        running_state = [True for _ in range(task_total)]
-        finish_reason = ["" for _ in range(task_total)]
+        running_state = [True] * task_total
+        finish_reason = [""] * task_total
         is_interrupted = False
         index = 0
 
         while any(running_state) and not is_interrupted:
             if index == 0:
-                if self.model.config.is_encoder_decoder:
-                    out = self.model.decoder(
-                        input_ids=start_ids,
-                        attention_mask=attention_mask,
-                        encoder_hidden_states=encoder_output,
-                        use_cache=True,
-                    )
-                    logits = self.model.lm_head(out[0])
-                else:
-                    out = self.model(start_ids,
-                                     attention_mask=attention_mask,
-                                     use_cache=True)
-                    logits = out.logits
-
+                input_ids = start_ids
             else:
-                if self.model.config.is_encoder_decoder:
-                    out = self.model.decoder(
-                        input_ids=torch.as_tensor(current_token, device=device),
-                        attention_mask=attention_mask,
-                        encoder_hidden_states=encoder_output,
-                        use_cache=True,
-                        past_key_values=past_key_values
-                    )
-                    logits = self.model.lm_head(out[0])
-                else:
-                    out = self.model(
-                        input_ids=torch.as_tensor(current_token, device=device),
-                        attention_mask=attention_mask,
-                        use_cache=True,
-                        past_key_values=past_key_values
-                    )
-                    logits = out.logits
+                input_ids = next_tokens_ids
+            if self.model.config.is_encoder_decoder:
+                out = self.model.decoder(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    encoder_hidden_states=encoder_output,
+                    use_cache=True,
+                    past_key_values=past_key_values
+                )
+                logits = self.model.lm_head(out[0])
+            else:
+                out = self.model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=True,
+                    past_key_values=past_key_values
+                )
+                logits = out.logits
+            if index == 0:
+                raw_last_logits = torch.stack([
+                    logits[i, last_valid_i - 1, :]
+                    for i, last_valid_i in enumerate(batch_input_ids_length)
+                ]).to(logits.device)
+            else:
+                raw_last_logits = logits[:, -1, :]
             past_key_values = out.past_key_values
 
             # 计算prompt的logprobs
             if echo and is_logprobs and index == 0:
-                prompt_token_offsets = [0 for _ in range(task_total)]
-                batch_openai_logprobs = torch.log_softmax(logits, dim=-1)
-                _, indices = torch.topk(batch_openai_logprobs, logprobs, dim=-1)
+                batch_raw_logprobs = torch.log_softmax(logits, dim=-1)
+                _, batch_token_ids = torch.topk(batch_raw_logprobs, logprobs, dim=-1)
+                # 第一个token没有logprobs
+                batch_sample_output_ids = batch_token_ids[:, 1:, :]
+                batch_prompt_tokens_probs = torch.gather(
+                    batch_raw_logprobs[:, :-1, :], dim=-1, index=batch_input_ids.unsqueeze(2)[:, 1:, :]
+                )
+                batch_top_tokens_logprobs = torch.gather(
+                    batch_raw_logprobs[:, :-1, :], dim=-1,
+                    index=batch_sample_output_ids
+                )
                 for i in range(task_total):
-                    if not running_state[i]:
-                        continue
-                    for prompt_token_index in range(len(input_ids[i]) - 1):
-                        if attention_mask[i][prompt_token_index] == 0:
-                            break
-                        prompt_next_token_index = prompt_token_index + 1
-                        prompt_next_token = input_ids[i, prompt_next_token_index]
-                        prompt_next_token_text = self.tokenizer.decode(prompt_next_token)
-                        tokens = [tok.tolist() for tok in indices[i, prompt_next_token_index]]
-                        top_logprobs = {}
-                        for token in tokens:
-                            token_text = self.tokenizer.decode(token)
-                            top_logprobs[token_text] = batch_openai_logprobs[i, prompt_token_index, token].tolist()
-                        prompt_token_offsets[i] += len(prompt_next_token_text)
-                        batch_logprobs[i]["tokens"].append(prompt_next_token_text)
-                        batch_logprobs[i]["token_logprobs"].append(
-                            batch_openai_logprobs[i, prompt_token_index, prompt_next_token].tolist())
-                        batch_logprobs[i]["text_offset"].append(prompt_token_offsets[i])
+                    batch_logprobs[i]["token_logprobs"] = batch_prompt_tokens_probs[i, :batch_input_ids_length[i],
+                                                          0].tolist()
+                    top_tokens = [
+                        self.tokenizer.batch_decode(batch_sample_output_ids[i, j, :])
+                        for j in range(batch_input_ids_length[i] - 1)
+                    ]
+                    top_tokens_logprobs = batch_top_tokens_logprobs[i, :batch_input_ids_length[i], :].tolist()
+                    for toks, toks_logprobs in zip(top_tokens, top_tokens_logprobs):
+                        top_logprobs = dict(zip(toks, toks_logprobs))
                         batch_logprobs[i]["top_logprobs"].append(top_logprobs)
 
-            last_token_logits = []
             if logits_processor:
-                for i in range(task_total):
-                    a = logits_processor(
-                        torch.as_tensor([batch_output_ids[i]], device=logits.device).long(),
-                        logits[i, -1, :]
-                    )
-                    last_token_logits.append(a)
+                last_token_logits = [
+                    logits_processor(
+                        torch.as_tensor(batch_output_ids[i], device=logits.device).long(),
+                        raw_last_logits[i, :])
+                    for i in range(task_total)
+                ]
                 last_token_logits = torch.stack(last_token_logits).to(device)
             else:
-                last_token_logits = logits[..., -1, :]
+                last_token_logits = raw_last_logits
 
-            current_token = []
+            # next_token_ids = None
             if is_logprobs:
                 if temperature < 1e-5 or top_p < 1e-8:
-                    probs = last_token_logits
-                    _, indices = torch.topk(last_token_logits, logprobs, dim=-1)
+                    _, batch_tokens_ids = torch.topk(last_token_logits, logprobs, dim=-1)
+                    next_tokens_ids = batch_tokens_ids[:, 0:1]
                 else:
+                    # 随机采样, 取出采样结果中概率最大的 token
                     probs = torch.softmax(last_token_logits, dim=-1)
-                    indices = torch.multinomial(probs, num_samples=logprobs)
+                    batch_sample_output_ids = torch.multinomial(probs, num_samples=logprobs)
+                    batch_sample_tokens_logprobs = torch.gather(probs, dim=-1, index=batch_sample_output_ids)
+                    _, batch_tokens_ids_index = torch.topk(batch_sample_tokens_logprobs, 1, dim=-1)
+                    next_tokens_ids = torch.gather(batch_sample_output_ids, dim=-1, index=batch_tokens_ids_index)
+                batch_raw_last_logprobs = torch.log_softmax(raw_last_logits, dim=-1)
+                batch_last_tokens_logprobs = torch.gather(batch_raw_last_logprobs, dim=-1, index=next_tokens_ids)
+                batch_top_tokens_logprobs = torch.gather(batch_raw_last_logprobs, dim=-1, index=batch_sample_output_ids)
                 for i in range(task_total):
-                    if not running_state[i]:
-                        continue
-                    tokens = [int(tok) for tok in indices[i].tolist()]
-                    openai_logprobs = torch.log_softmax(logits[i, -1, :], dim=-1).tolist()
-                    probs_i = probs[i].tolist()
-                    top_logprobs = {}
-                    max_token_probs = float("-inf")
-                    max_token_id = None
-                    max_token_text = None
-                    for token in tokens:
-                        openai_logprobs_value = openai_logprobs[token]
-                        token_text = self.tokenizer.decode(token)
-                        top_logprobs[token_text] = openai_logprobs_value
-                        if probs_i[token] > max_token_probs:
-                            max_token_id = token
-                            max_token_text = token_text
-                            max_token_probs = probs_i[token]
-                    batch_logprobs[i]["current_token_text_offset"] += len(max_token_text)
-                    batch_logprobs[i]["tokens"].append(max_token_text)
-                    batch_logprobs[i]["token_logprobs"].append(top_logprobs[max_token_text])
-                    batch_logprobs[i]["text_offset"].append(batch_logprobs[i]["current_token_text_offset"])
+                    batch_logprobs[i]["token_logprobs"].append(batch_last_tokens_logprobs[i, 0].tolist())
+                    top_tokens = self.tokenizer.batch_decode(batch_sample_output_ids[i, :])
+                    top_tokens_logprobs = batch_top_tokens_logprobs[i].tolist()
+                    top_logprobs = dict(zip(top_tokens, top_tokens_logprobs))
                     batch_logprobs[i]["top_logprobs"].append(top_logprobs)
-                    current_token.append(max_token_id)
             else:
                 if temperature < 1e-5 or top_p < 1e-8:
-                    current_token.extend(torch.argmax(last_token_logits, dim=-1).tolist())
+                    next_tokens_ids = torch.argmax(last_token_logits, dim=-1).unsqueeze(1)
                 else:
                     probs = torch.softmax(last_token_logits, dim=-1)
-                    current_token = [tok[0] for tok in torch.multinomial(probs, num_samples=1).tolist()]
+                    next_tokens_ids = torch.multinomial(probs, num_samples=1)
 
-            if index < max_new_tokens:
-                index += 1
+            index += 1
+            for i in range(task_total):
+                if not running_state[i]:
+                    continue
+                token_index[i] += 1
+                batch_output_ids[i] = torch.cat((batch_output_ids[i], next_tokens_ids[i, :]), dim=-1)
+
+            if index % stream_interval == 0 or not all(running_state):
                 for i in range(task_total):
                     if not running_state[i]:
                         continue
-                    if current_token[i] in stop_token_ids:
-                        running_state[i] = False
-                        finish_reason[i] = CompletionFinishReasonEnum.stop.value
-                    batch_output_ids[i].append(current_token[i])
-                    token_index[i] += 1
-
-            if index == max_new_tokens:
-                running_state = [False if r else r for r in running_state]
-                finish_reason = [CompletionFinishReasonEnum.length.value if len(r) == 0 else r for r in finish_reason]
-
-            if index % stream_interval == 0 or not all(running_state):
-                batch_output = [
-                    self.tokenizer.decode(
-                        output_ids,
+                    message = stopping_criteria(batch_output_ids[i], last_token_logits)
+                    # 必须放在 stopping_criteria 之后，因为在该方法中会修改output_ids
+                    output_tokens_str = self.tokenizer.batch_decode(
+                        batch_output_ids[i],
                         skip_special_tokens=True,
                         spaces_between_special_tokens=False,
                         clean_up_tokenization_spaces=True,
                     )
-                    for output_ids in batch_output_ids
-                ]
-
-                if stop_str_list:
-                    for i in range(task_total):
-                        is_stopped, batch_output[i] = check_stop_str(batch_output[i],
-                                                                     stop_str_list,
-                                                                     batch_prompt_length[i] if echo else 0)
-                        if is_stopped:
-                            running_state[i] = False
-                            finish_reason[i] = CompletionFinishReasonEnum.stop.value
+                    output_tokens_str = list(filter(None, output_tokens_str))
+                    batch_output[i] = "".join(output_tokens_str)
+                    if message.stop:
+                        running_state[i] = False
+                        finish_reason[i] = message.message
+                        # 计算logprobs: text_offset
+                        output_tokens_str_length = [len(token_str) for token_str in output_tokens_str]
+                        batch_logprobs[i]["tokens"] = output_tokens_str
+                        batch_logprobs[i]["text_offset"] = [0] + list(accumulate(output_tokens_str_length))[:-1]
+                        batch_logprobs[i]["token_logprobs"] = batch_logprobs[i]["token_logprobs"][
+                                                              :len(output_tokens_str)]
+                        batch_logprobs[i]["top_logprobs"] = batch_logprobs[i]["top_logprobs"][:len(output_tokens_str)]
 
                 response = TempCompletionResponse(
                     choices=[
                         CompletionChoiceResponse(
                             text=batch_output[i],
-                            logprobs=None if not is_logprobs else CompletionLogprobs(
-                                text_offset=batch_logprobs[i]["text_offset"],
-                                token_logprobs=batch_logprobs[i]["token_logprobs"],
-                                tokens=batch_logprobs[i]["tokens"],
-                                top_logprobs=batch_logprobs[i]["top_logprobs"]
-                            ),
+                            logprobs=None if running_state[i] else CompletionLogprobs(**batch_logprobs[i]),
                             usage=CompletionUsageInfo(
                                 prompt_tokens=batch_input_ids_length[i],
                                 completion_tokens=token_index[i],
                                 total_tokens=batch_input_ids_length[i] + token_index[i]
                             ),
-                            finish_reason=finish_reason[i]
+                            finish_reason=None if running_state[i] else finish_reason[i]
                         )
                         for i in range(task_total)
                     ],
                     interrupted=False
                 )
-                # response = {
-                #     "choices": [
-                #         {
-                #             "text": batch_output[i],
-                #             "logprobs": None if not is_logprobs else {
-                #                 "text_offset": batch_logprobs[i]["text_offset"],
-                #                 "token_logprobs": batch_logprobs[i]["token_logprobs"],
-                #                 "tokens": batch_logprobs[i]["tokens"],
-                #                 "top_logprobs": batch_logprobs[i]["top_logprobs"]
-                #             },
-                #             "usage": {
-                #                 "prompt_tokens": batch_input_ids_length[i],
-                #                 "completion_tokens": token_index[i],
-                #                 "total_tokens": batch_input_ids_length[i] + token_index[i]
-                #             },
-                #             "finish_reason": finish_reason[i]
-                #         }
-                #         for i in range(task_total)
-                #     ]
-                # }
                 yield response
                 is_interrupted = response.interrupted
-            current_token = torch.tensor(current_token, dtype=torch.int32).unsqueeze(1).to(device)
+            next_tokens_ids.to(device)
             new_mask = torch.tensor(running_state, dtype=torch.int8).unsqueeze(1).to(device)
             attention_mask = torch.cat([attention_mask, new_mask], dim=1)
 
-        del past_key_values, out
+        del past_key_values, out, input_ids, attention_mask
         gc.collect()
         torch.cuda.empty_cache()
 

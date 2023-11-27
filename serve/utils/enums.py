@@ -18,6 +18,7 @@ class CompletionFinishReasonEnum(Enum):
     stop: str = "stop"
     length: str = "length"
     interrupt: str = "interrupt"
+    time: str = "time"
 
     def __len__(self):
         return len(self.value)

@@ -123,11 +123,10 @@ class CompletionRequest(BaseRequest):
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 16
     top_p: Optional[float] = 1.0
-    top_k: Optional[int] = -1  # -1 means disable
     repetition_penalty: Optional[float] = 1.0
     stop_str: Optional[List[str]] = []
     echo: Optional[bool] = False
-    stop_token_ids: Optional[Union[str, List[str]]] = []
+    stop_token_ids: Optional[List[int]] = []
     max_context_len: Optional[int] = 2048
     stream_interval: Optional[int] = 3
     logprobs: Optional[int] = None
@@ -226,10 +225,9 @@ class ChatCompletionRequest(BaseRequest):
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 16
     top_p: Optional[float] = 1.0
-    top_k: Optional[int] = -1  # -1 means disable
     repetition_penalty: Optional[float] = 1.0
     stop_str: Optional[Union[str, List[str]]] = []
-    stop_token_ids: Optional[Union[str, List[str]]] = []
+    stop_token_ids: Optional[List[int]] = []
     stream_interval: Optional[int] = 3
     logprobs: Optional[int] = None
     n: Optional[int] = 1

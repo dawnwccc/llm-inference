@@ -1,30 +1,24 @@
 import torch
-from transformers import BertTokenizer, BertModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# 初始化tokenizer和模型
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-model = BertModel.from_pretrained('bert-base-uncased')
+from serve.utils.inference.batcher import batch_tokenize
 
-# 假设我们的输入是两个句子
-sentences = ['Hello world!', 'I love programming.']
+checkpoint = r"H:\Projects\Python\models\python258k"
+device = "cuda"  # for GPU usage or "cpu" for CPU usage
+texts = [
+    "def print_hello(",
+    "def bubble_sort("
+]
 
-# 对句子进行编码
-encoded_inputs = tokenizer(sentences, padding='longest', return_tensors='pt')
-print(encoded_inputs.input_ids)
-print(tokenizer.batch_decode(encoded_inputs.input_ids.tolist()))
-
-# 获取填充的token id
-pad_token_id = tokenizer.pad_token_id
-print(pad_token_id)
-
-# 如果模型没有pad_token_id，我们可以手动设置一个
-if model.config.pad_token_id is None:
-    model.config.pad_token_id = pad_token_id
-
-# 对输入进行填充
-input_ids = encoded_inputs['input_ids']
-attention_mask = encoded_inputs['attention_mask']
-
-# 调用模型
-outputs = model(input_ids, attention_mask=attention_mask)
-# print(outputs)
+tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
+input_ids = torch.as_tensor([4299, 3601, 62, 31373, 7], dtype=torch.int32)
+print(input_ids)
+output = tokenizer.batch_decode(input_ids)
+print(output)
+# model = AutoModelForCausalLM.from_pretrained(checkpoint, trust_remote_code=True).to(device)
+# request = {"n": 1,
+#            "temperature": 0,
+#            "max_tokens": 20,
+#            "stop_str": ["if __name", "def", "# "]}
+# batch_inputs = batch_tokenize(prompt=texts, n=1, device=device, tokenize_func=tokenizer)
+# print(batch_inputs)
