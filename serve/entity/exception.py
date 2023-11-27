@@ -77,7 +77,7 @@ def global_exception_handler(logger):
 def request_validation_exception_handler(logger):
     async def request_validation_exception_handler_wrapper(request: Request, exp: RequestValidationError):
         message = ";\n".join([
-            f"""{e["msg"]}: type: {e["type"]}, loc: {e["loc"][-1]}. Please check: {e["url"]}"""
+            f"""{e["msg"]}: type: {e["type"]}, loc: {e["loc"][-1]}"""
             for e in exp.errors()
         ])
         logger.error(f"{message}. detail: {str(exp)}")
