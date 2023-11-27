@@ -1,29 +1,30 @@
-import asyncio
-import time
+import torch
+from transformers import BertTokenizer, BertModel
 
+# 初始化tokenizer和模型
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+model = BertModel.from_pretrained('bert-base-uncased')
 
-# 定义异步函数
-async def async_function():
-    print("Start async function")
-    # 模拟异步操作，这里使用 asyncio.sleep 来模拟 I/O 操作
-    time.sleep(1)
-    print("Async function completed")
+# 假设我们的输入是两个句子
+sentences = ['Hello world!', 'I love programming.']
 
+# 对句子进行编码
+encoded_inputs = tokenizer(sentences, padding='longest', return_tensors='pt')
+print(encoded_inputs.input_ids)
+print(tokenizer.batch_decode(encoded_inputs.input_ids.tolist()))
 
-# 异步调用
-async def main():
-    print("Before calling async function")
+# 获取填充的token id
+pad_token_id = tokenizer.pad_token_id
+print(pad_token_id)
 
-    # 使用 await 调用异步函数
-    await async_function()
+# 如果模型没有pad_token_id，我们可以手动设置一个
+if model.config.pad_token_id is None:
+    model.config.pad_token_id = pad_token_id
 
-    print("After calling async function")
+# 对输入进行填充
+input_ids = encoded_inputs['input_ids']
+attention_mask = encoded_inputs['attention_mask']
 
-
-# 运行异步程序
-if __name__ == "__main__":
-    # 创建一个事件循环
-    loop = asyncio.get_event_loop()
-
-    # 运行主函数，直到完成
-    loop.run_until_complete(main())
+# 调用模型
+outputs = model(input_ids, attention_mask=attention_mask)
+# print(outputs)

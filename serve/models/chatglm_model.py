@@ -169,7 +169,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     # return_dict=True,
                     # output_attentions=False,
                     # output_hidden_states=False,
-                    return_last_logit=True
+                    # return_last_logit=True
                 )
             else:
                 out = self.model(
@@ -178,10 +178,10 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     use_cache=True,
-                    return_dict=True,
-                    output_attentions=False,
-                    output_hidden_states=False,
-                    return_last_logit=True
+                    # return_dict=True,
+                    # output_attentions=False,
+                    # output_hidden_states=False,
+                    # return_last_logit=True
                 )
             past_key_values = out.past_key_values
             logits = out.logits
@@ -258,7 +258,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
             #     [position_ids, new_position_id], dim=-1
             # )
             position_ids = torch.as_tensor([[new_position_id]], device=device)
-
+            print(token_index)
             if token_index < max_new_tokens:
                 token_index += 1
                 output_ids.append(current_token)
