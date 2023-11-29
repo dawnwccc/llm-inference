@@ -1,0 +1,1 @@
+python ../controller.py --model llama2-7b --model_path /mnt/disk1/wangchen/llm/models/meta/llama-2-7b --device cuda --device_map balanced_low_0  --port 8001

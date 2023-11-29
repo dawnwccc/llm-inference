@@ -1,0 +1,1 @@
+python ../controller.py --model codellama-7b-instruct --model_path /mnt/disk1/wangchen/llm/models/codellama/CodeLlama-7b-Instruct-hf --device cuda --device_map balanced_low_0  --port 8006

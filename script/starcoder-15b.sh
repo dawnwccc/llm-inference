@@ -1,0 +1,1 @@
+python ../controller.py --model starcoder-15b --model_path /mnt/disk1/wangchen/llm/models/bigcode/starcoder --device cuda --device_map balanced_low_0  --port 8003
