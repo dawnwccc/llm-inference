@@ -35,8 +35,8 @@ def chat_completion(request: ChatCompletionRequest):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    # parser.add_argument("--model", type=str, required=True)
-    # parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--host", type=str, default="127.0.0.1")
@@ -45,18 +45,14 @@ if __name__ == "__main__":
     parser.add_argument("--revision", type=str, default="main")
 
     args = vars(parser.parse_args())
-    # model_name = args.pop("model")
-    # model_path = args.pop("model_path")
+    model_name = args.pop("model")
+    model_path = args.pop("model_path")
     device = args.pop("device")
     is_debug = args.pop("debug")
     device_map = args.pop("device_map")
 
     host = args.pop("host")
     port = args.pop("port")
-
-    model_name = "chatglm3-6b"
-    model_path = r"C:\Research\llm_code_quality_research\models\chatglm3-6b"
-    device = "cpu"
 
     server = BaseModelServer(model_name=model_name, model_name_or_path=model_path, device=device,
                              debug=is_debug, device_map=device_map, **args)
