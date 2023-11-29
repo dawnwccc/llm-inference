@@ -191,7 +191,7 @@ async def chat_completions_1(request: Request):
         return BaseResponse().success()
     params: dict = await request.json()
     params["ip"] = get_real_ip(request)
-    response = await server.completions(params)
+    response = await server.chat_completions(params)
     response = BaseResponse(**response)
     return response.data
 

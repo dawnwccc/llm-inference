@@ -1,6 +1,8 @@
 import json
 from typing import Union, List, Dict, Optional, Any
 from datetime import datetime
+
+import shortuuid
 from pydantic import BaseModel, Field
 from serve.utils.enums import ModelFunctionEnum, HTTPStatusCode, CompletionFinishReasonEnum
 
@@ -60,7 +62,7 @@ class BaseResponse(BaseModel):
     message: str = None
     state: bool = None
     code: Union[int, HTTPStatusCode] = None
-    data: dict = None
+    data: Optional[Dict[str, Any]] = None
 
     def success(self):
         self.state = True
@@ -151,7 +153,7 @@ class KillSignalRequest(BaseRequest):
 
 
 class ModelPermission(BaseModel):
-    id: str
+    id: Optional[str] = Field(default_factory=lambda: f"modelperm-{shortuuid.random()}")
     object: str = "model_permission"
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     allow_create_engine: bool = False
@@ -166,7 +168,7 @@ class ModelPermission(BaseModel):
 
 
 class ModelCard(BaseModel):
-    id: str
+    id: Optional[str] = None
     object: str = "model"
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     owned_by: str = ""
@@ -204,7 +206,7 @@ class CompletionChoiceResponse(BaseModel):
 
 
 class CompletionResponse(BaseModel):
-    id: Optional[str] = None
+    id: Optional[str] = Field(default_factory=lambda: f"cmpl-{shortuuid.random()}")
     object: ModelFunctionEnum = ModelFunctionEnum.completion
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     model: str
@@ -248,7 +250,7 @@ class ChatCompletionChoiceResponse(BaseModel):
 
 
 class ChatCompletionResponse(BaseModel):
-    id: Optional[str] = None
+    id: Optional[str] = Field(default_factory=lambda: f"chatcmpl-{shortuuid.random()}")
     model: str
     object: ModelFunctionEnum = ModelFunctionEnum.chat_completion
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
