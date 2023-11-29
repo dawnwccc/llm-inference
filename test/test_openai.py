@@ -1,13 +1,21 @@
-import openai
+from openai import OpenAI
 
-openai.api_key = "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"
-
-response = openai.ChatCompletion.create(
-    model="gpt-3.5-turbo",
+client = OpenAI(
+    base_url="http://172.18.101.28:5901/v1",
+    api_key="None",
+)
+response1 = client.chat.completions.create(
+    model="chatglm3-6b",
     messages=[
         {"role": "system", "content": "You are a helpful and harmless assistant"},
         {"role": "user", "content": "hello"}
     ],
-    max_tokens=1
+    max_tokens=10
 )
-print(response)
+print(response1)
+response2 = client.completions.create(
+    model="chatglm3-6b",
+    prompt="hello, how are you?",
+    max_tokens=10
+)
+print(response2)
