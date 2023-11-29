@@ -220,7 +220,8 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                         for flag, token_str in zip(output_tokens_flag, output_tokens_str)
                         if flag
                     ]
-                    batch_output[i] = "".join(output_tokens_str)
+                    # batch_output[i] = "".join(output_tokens_str)
+                    batch_output[i] = self.tokenizer.decode(batch_output_ids[i])
                     if message.stop:
                         running_state[i] = False
                         finish_reason[i] = message.message
@@ -242,12 +243,11 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                                 for flag, top_logprobs in zip(output_tokens_flag, batch_logprobs[i]["top_logprobs"])
                                 if flag
                             ]
-
                 response = TempCompletionResponse(
                     choices=[
                         CompletionChoiceResponse(
-                            text=batch_output[i],
-                            logprobs=None if running_state[i] else CompletionLogprobs(**batch_logprobs[i]),
+                            text=self.parse_text(batch_output[i]),
+                            logprobs=CompletionLogprobs(**batch_logprobs[i]) if not running_state[i] and is_logprobs else None,
                             usage=CompletionUsageInfo(
                                 prompt_tokens=batch_input_ids_length[i],
                                 completion_tokens=token_index[i],
@@ -288,13 +288,11 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
         prompts, (input_ids, attention_mask, position_ids) = batch_tokenize(
             prompt=prompt, n=n, device=device,
             tokenize_func=self.tokenizer.build_chat_input, tokenize_func_kwargs={
-                "query": prompt,
                 "history": history,
                 "role": "user"
             },
             pad_token_id=self.tokenizer.pad_token_id
         )
-
         return self._completion(
             prompts=prompts,
             batch_input_ids=input_ids,
@@ -307,3 +305,35 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
 
     def embedding(self):
         pass
+
+    def parse_text(self, text):
+        """copy from https://github.com/GaiZhenbiao/ChuanhuChatGPT/"""
+        lines = text.split("\n")
+        lines = [line for line in lines if line != ""]
+        count = 0
+        for i, line in enumerate(lines):
+            if "```" in line:
+                count += 1
+                items = line.split('`')
+                if count % 2 == 1:
+                    lines[i] = f'<pre><code class="language-{items[-1]}">'
+                else:
+                    lines[i] = f'<br></code></pre>'
+            else:
+                if i > 0:
+                    if count % 2 == 1:
+                        line = line.replace("`", "\`")
+                        line = line.replace("<", "&lt;")
+                        line = line.replace(">", "&gt;")
+                        line = line.replace(" ", "&nbsp;")
+                        line = line.replace("*", "&ast;")
+                        line = line.replace("_", "&lowbar;")
+                        line = line.replace("-", "&#45;")
+                        line = line.replace(".", "&#46;")
+                        line = line.replace("!", "&#33;")
+                        line = line.replace("(", "&#40;")
+                        line = line.replace(")", "&#41;")
+                        line = line.replace("$", "&#36;")
+                    lines[i] = "<br>"+line
+        text = "".join(lines)
+        return text

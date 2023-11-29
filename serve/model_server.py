@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os.path
 import sys
+import threading
+
 import shortuuid
 from abc import abstractmethod
 import httpx
@@ -80,10 +82,12 @@ class BaseModelServer:
             else:
                 # 数据返回成功，心跳失败
                 self.register_flag = False
-                self.logger.error(f"{self.model_name} heartbeat failure. message: {response.json()['message']}")
+                # self.logger.error(f"{self.model_name} heartbeat failure. message: {response.json()['message']}")
         except Exception as e:
+            if self.register_flag and self.heartbeat_failure_count == 0:
+                # 第一次心跳失败
+                self.logger.error(f"{self.model_name} heartbeat failure. reason: {e}")
             self.heartbeat_failure_count += 1
-            self.logger.error(f"{self.model_name} heartbeat failure. reason: {e}")
             if self.heartbeat_failure_count > ServerConfig.MAX_HEARTBEAT_FAILURES:
                 self.register_flag = False
                 # time.sleep(3 * ServerConfig.HEARTBEAT_RATE)
@@ -106,10 +110,11 @@ class BaseModelServer:
                 self.register_flag = True
                 self.logger.info(f"{self.model_name} register success.")
                 self.heartbeat_failure_count = 0
-            else:
-                self.logger.error(f"{self.model_name} register failure. message: {response.json()['message']}")
+            # else:
+            #     self.logger.error(f"{self.model_name} register failure. message: {response.json()['message']}")
         except Exception as e:
-            self.logger.error(f"{self.model_name} register failure. reason: {e}")
+            if self.register_flag:
+                self.logger.error(f"{self.model_name} register failure. reason: {e}")
             # time.sleep(3 * ServerConfig.HEARTBEAT_RATE)
 
     def init_register_and_heartbeat(self):
@@ -128,6 +133,9 @@ class BaseModelServer:
         self.heartbeat_scheduler.add_job(self.init_register_and_heartbeat, "interval",
                                          max_instances=1,
                                          seconds=ServerConfig.HEARTBEAT_RATE),
+        # scheduler_thread = threading.Thread(target=self.heartbeat_scheduler.start)
+        # scheduler_thread.daemon = True
+        # scheduler_thread.start()
         self.heartbeat_scheduler.start()
         app.add_api_route(path=ServerConfig.KILL_SIGNAL_URL,
                           endpoint=self.receive_kill_signal,
@@ -286,11 +294,6 @@ class BaseModelServer:
             response.usage.prompt_tokens = sum(choice.usage.prompt_tokens for choice in response.choices)
             response.usage.completion_tokens = sum(choice.usage.completion_tokens for choice in response.choices)
             response.usage.total_tokens = sum(choice.usage.total_tokens for choice in response.choices)
-        if temp_response.interrupted:
-            raise GlobalException("chat completion is killed.", extra=str({
-                "messages": messages,
-                "params": params.parse2dict()
-            }))
         self.sessions.discard(session_id)
         self.logger.chat_completion(response.model_dump_json())
         if is_interrupted:

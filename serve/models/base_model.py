@@ -297,7 +297,8 @@ class DefaultModelFunction(AbstractModelFunction):
                         for flag, token_str in zip(output_tokens_flag, output_tokens_str)
                         if flag
                     ]
-                    batch_output[i] = "".join(output_tokens_str)
+                    # batch_output[i] = "".join(output_tokens_str)
+                    batch_output[i] = self.tokenizer.decode(batch_output_ids[i])
                     if message.stop:
                         running_state[i] = False
                         finish_reason[i] = message.message
@@ -324,7 +325,7 @@ class DefaultModelFunction(AbstractModelFunction):
                     choices=[
                         CompletionChoiceResponse(
                             text=batch_output[i],
-                            logprobs=None if running_state[i] else CompletionLogprobs(**batch_logprobs[i]),
+                            logprobs=CompletionLogprobs(**batch_logprobs[i]) if not running_state[i] and is_logprobs else None,
                             usage=CompletionUsageInfo(
                                 prompt_tokens=batch_input_ids_length[i],
                                 completion_tokens=token_index[i],

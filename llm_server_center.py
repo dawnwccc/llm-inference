@@ -1,4 +1,5 @@
 import logging
+from argparse import ArgumentParser
 from datetime import datetime
 from typing import Dict, Any, Union, List
 
@@ -34,6 +35,7 @@ class LLMServerCenter:
         self.scheduler = BackgroundScheduler()
         self.session_list = {}
         self.max_heartbeat_interval = 3 * ServerConfig.MAX_HEARTBEAT_FAILURES * ServerConfig.HEARTBEAT_RATE * 1000
+        self.headers = {"Content-Type": "application/json"}
 
     def run(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8000, log_level=logging.DEBUG):
         # 开始定时器
@@ -104,7 +106,9 @@ class LLMServerCenter:
         model = params.get("model")
         async with httpx.AsyncClient() as client:
             response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
-                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT,
+                                         headers=self.headers)
+            response.raise_for_status()
         self.logger.info(f"IP:{params['ip']} request completions.")
         return response.json()
 
@@ -114,7 +118,9 @@ class LLMServerCenter:
         model = params.get("model")
         async with httpx.AsyncClient() as client:
             response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
-                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT)
+                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT,
+                                         headers=self.headers)
+            response.raise_for_status()
         self.logger.info(f"IP:{params['ip']} request chat completions.")
         return response.json()
 
@@ -130,7 +136,8 @@ class LLMServerCenter:
                                          json={
                                              "model": model,
                                              "session_id": session_id
-                                         }, timeout=ServerConfig.SESSION_TIMEOUT)
+                                         }, timeout=ServerConfig.SESSION_TIMEOUT,
+                                         headers=self.headers)
         return response.json()
 
 
@@ -183,5 +190,6 @@ async def kill_completion(request: Request):
 
 
 if __name__ == "__main__":
+
     server = LLMServerCenter()
     server.run(app, host=ServerConfig.SERVER_CENTER_URL, port=ServerConfig.SERVER_CENTER_PORT)

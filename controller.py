@@ -5,6 +5,8 @@ from serve.model_server import BaseModelServer
 from fastapi import FastAPI
 from serve.utils.init import init_environment
 
+from argparse import ArgumentParser
+
 # init
 init_environment()
 
@@ -32,12 +34,30 @@ def chat_completion(request: ChatCompletionRequest):
 
 
 if __name__ == "__main__":
-    # server = BaseModelServer("pycoder258k", r"C:\Projects\Python\my-llm-utils\model\iter258k", "cpu",
-    #                          debug=True)
-    # server = BaseModelServer("pycoder258k", r"H:\Projects\Python\models\python258k", "cuda",
-    #                          revision="main", debug=True)
-    server = BaseModelServer("chatglm3", r"C:\Research\llm_code_quality_research\models\chatglm3-6b", "cpu",
-                             revision="main", debug=True)
-    # server = BaseModelServer("chatglm3", r"G:\chatglm3", "cpu",
-    #                          revision="main", debug=True)
-    server.run(app, port=8001)
+    parser = ArgumentParser()
+    # parser.add_argument("--model", type=str, required=True)
+    # parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--host", type=str, default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8001)
+    parser.add_argument("--device_map", type=str, default="auto")
+    parser.add_argument("--revision", type=str, default="main")
+
+    args = vars(parser.parse_args())
+    # model_name = args.pop("model")
+    # model_path = args.pop("model_path")
+    device = args.pop("device")
+    is_debug = args.pop("debug")
+    device_map = args.pop("device_map")
+
+    host = args.pop("host")
+    port = args.pop("port")
+
+    model_name = "chatglm3-6b"
+    model_path = r"C:\Research\llm_code_quality_research\models\chatglm3-6b"
+    device = "cpu"
+
+    server = BaseModelServer(model_name=model_name, model_name_or_path=model_path, device=device,
+                             debug=is_debug, device_map=device_map, **args)
+    server.run(app, host=host, port=port)

@@ -148,12 +148,15 @@ class ChatTemplateWithSingleColon(ChatTemplate):
     stop_str: Union[str, List[str]] = ["user:"]
 
 
-@register_chat_template("chatglm")
+@register_chat_template("chatglm3")
 class ChatGLMTemplate(ChatTemplate):
     roles: Tuple[str] = ("user", "assistant")
     function_role = "observation"
     system_role = "system"
     system_template: str = """{system_role}\n {system_message}"""
+
+    system_message: str = ("You are ChatGLM3, a large language model trained by Zhipu.AI. Follow the user's "
+                           "instructions carefully. Respond using markdown.").strip()
     few_shot: List[ChatMessage] = None
     few_shot_template: str = """例如：\n{few_shot}\n"""
     message_template: str = "{role}\n {content}"
