@@ -156,8 +156,8 @@ def get_model_status():
     return BaseResponse().success().set_data("models", model_list)
 
 
-@app.post("/v1/completions")
-async def completions(request: Request):
+@app.post("/v0/completions")
+async def completions_0(request: Request):
     if check_crawler(request):
         return BaseResponse().success()
     params: dict = await request.json()
@@ -165,13 +165,35 @@ async def completions(request: Request):
     return await server.completions(params)
 
 
-@app.post("/v1/chat/completions")
-async def completions(request: Request):
+@app.post("/v0/chat/completions")
+async def chat_completions_0(request: Request):
     if check_crawler(request):
         return BaseResponse().success()
     params: dict = await request.json()
     params["ip"] = get_real_ip(request)
     return await server.chat_completions(params)
+
+
+@app.post("/v1/completions")
+async def completions_1(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
+    params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
+    response = await server.completions(params)
+    response = BaseResponse(**response)
+    return response.data
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions_1(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
+    params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
+    response = await server.completions(params)
+    response = BaseResponse(**response)
+    return response.data
 
 
 @app.post(ServerConfig.KILL_SIGNAL_URL)
@@ -190,6 +212,5 @@ async def kill_completion(request: Request):
 
 
 if __name__ == "__main__":
-
     server = LLMServerCenter()
     server.run(app, host=ServerConfig.SERVER_CENTER_URL, port=ServerConfig.SERVER_CENTER_PORT)

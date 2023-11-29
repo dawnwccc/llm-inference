@@ -30,23 +30,29 @@ def batch_tokenize(
     batch_position_ids = []
     for p in prompts:
         inputs = tokenize_func(p, **tokenize_func_kwargs)
-        input_ids = inputs.get("input_ids")[0]
+        input_ids = inputs.get("input_ids")
         if isinstance(input_ids, torch.Tensor):
             input_ids = input_ids.tolist()
+        if isinstance(input_ids[0], list):
+            input_ids = input_ids[0]
         input_ids_lengths.append(len(input_ids))
         batch_input_ids.append(input_ids)
         attention_mask = inputs.get("attention_mask", None)
         if attention_mask is not None:
             if isinstance(attention_mask, torch.Tensor):
                 attention_mask = attention_mask.tolist()
-            batch_attention_mask.append(attention_mask[0])
+            if isinstance(attention_mask[0], list):
+                attention_mask = attention_mask[0]
+            batch_attention_mask.append(attention_mask)
         else:
             batch_attention_mask.append(attention_mask)
         position_ids = inputs.get("position_ids", None)
         if position_ids is not None:
             if isinstance(position_ids, torch.Tensor):
                 position_ids = position_ids.tolist()
-            batch_position_ids.append(position_ids[0])
+            if isinstance(position_ids[0], list):
+                position_ids = position_ids[0]
+            batch_position_ids.append(position_ids)
         else:
             batch_position_ids.append(position_ids)
 
