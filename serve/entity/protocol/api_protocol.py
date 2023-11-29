@@ -1,8 +1,10 @@
 import json
 from typing import Union, List, Dict, Optional, Any
 from datetime import datetime
+
+import shortuuid
 from pydantic import BaseModel, Field
-from utils.enums import ModelFunctionEnum, HTTPStatusCode, CompletionFinishReasonEnum
+from serve.utils.enums import ModelFunctionEnum, HTTPStatusCode, CompletionFinishReasonEnum
 
 
 class BaseRequest(BaseModel):
@@ -10,7 +12,7 @@ class BaseRequest(BaseModel):
     自定义大模型请求数据
     重写schema以及schema_json方法
     """
-    id: Optional[Union[str, List[str]]] = None
+    id: Optional[str] = None
     ip: Optional[str] = None
     api_key: Optional[str] = ""
     version: Optional[Union[str, float, int]] = 1
@@ -60,7 +62,7 @@ class BaseResponse(BaseModel):
     message: str = None
     state: bool = None
     code: Union[int, HTTPStatusCode] = None
-    data: dict = {}
+    data: Optional[Dict[str, Any]] = None
 
     def success(self):
         self.state = True
@@ -76,26 +78,35 @@ class BaseResponse(BaseModel):
             self.message = "unknown error"
         return self
 
-    def set_data(self, key: str, value: Any):
-        self.data[key] = value
-        return self
-
-    def update_data(self, value: Union[dict, BaseModel]):
-        if isinstance(value, dict):
-            self.data.update(value)
-        elif isinstance(value, BaseModel):
-            self.data.update(value.model_dump())
+    def set_data(self, value: Any = None, key: Union[str, dict, BaseModel] = None):
+        if not self.data:
+            self.data = {}
+        if key and isinstance(key, str):
+            self.data[key] = value
         else:
-            raise ValueError("value must be dict or BaseModel")
+            if isinstance(value, dict):
+                self.data.update(value)
+            elif isinstance(value, BaseModel):
+                self.data.update(value.model_dump())
+            else:
+                raise ValueError("value must be dict or BaseModel")
         return self
 
-    def set_message(self, message: str):
+    def set_message(self, message: str, code: Union[int, HTTPStatusCode] = None):
         self.message = message
+        if code:
+            self.code = code
         return self
 
     def set_code(self, code: Union[int, HTTPStatusCode]):
         self.code = code
         return self
+
+    def parse2dict(self):
+        return json.loads(self.model_dump_json())
+
+    def parse2json(self):
+        return self.model_dump_json()
 
 
 class ModelRegisterRequest(BaseRequest):
@@ -114,11 +125,10 @@ class CompletionRequest(BaseRequest):
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 16
     top_p: Optional[float] = 1.0
-    top_k: Optional[int] = -1  # -1 means disable
     repetition_penalty: Optional[float] = 1.0
-    stop_str: Optional[Union[str, List[str]]] = []
+    stop_str: Optional[List[str]] = []
     echo: Optional[bool] = False
-    stop_token_ids: Optional[Union[str, List[str]]] = []
+    stop_token_ids: Optional[List[int]] = []
     max_context_len: Optional[int] = 2048
     stream_interval: Optional[int] = 3
     logprobs: Optional[int] = None
@@ -136,12 +146,14 @@ class EmbeddingsRequest(BaseRequest):
     document: Union[str, List[str]]
 
 
-class KillSessionRequest(BaseRequest):
-    object: ModelFunctionEnum
+class KillSignalRequest(BaseRequest):
+    model: str
+    session_id: Union[str, List[str]]
+    # model_function: ModelFunctionEnum
 
 
 class ModelPermission(BaseModel):
-    id: str
+    id: Optional[str] = Field(default_factory=lambda: f"modelperm-{shortuuid.random()}")
     object: str = "model_permission"
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     allow_create_engine: bool = False
@@ -156,7 +168,7 @@ class ModelPermission(BaseModel):
 
 
 class ModelCard(BaseModel):
-    id: str
+    id: Optional[str] = None
     object: str = "model"
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     owned_by: str = ""
@@ -194,7 +206,7 @@ class CompletionChoiceResponse(BaseModel):
 
 
 class CompletionResponse(BaseModel):
-    id: Optional[str] = None
+    id: Optional[str] = Field(default_factory=lambda: f"cmpl-{shortuuid.random()}")
     object: ModelFunctionEnum = ModelFunctionEnum.completion
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     model: str
@@ -202,17 +214,22 @@ class CompletionResponse(BaseModel):
     usage: Optional[CompletionUsageInfo] = None
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+    # name: Optional[str] = None
+    # function_call: Optional[object] = None
+
+
 class ChatCompletionRequest(BaseRequest):
     model: str
-    messages: Union[str, List[Dict[str, str]]]
+    messages: List[ChatMessage]
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 16
     top_p: Optional[float] = 1.0
-    top_k: Optional[int] = -1  # -1 means disable
     repetition_penalty: Optional[float] = 1.0
     stop_str: Optional[Union[str, List[str]]] = []
-    stop_token_ids: Optional[Union[str, List[str]]] = []
-    max_context_len: Optional[int] = 2048
+    stop_token_ids: Optional[List[int]] = []
     stream_interval: Optional[int] = 3
     logprobs: Optional[int] = None
     n: Optional[int] = 1
@@ -220,13 +237,6 @@ class ChatCompletionRequest(BaseRequest):
     user: Optional[str] = None
     frequency_penalty: Optional[float] = 0.0
     presence_penalty: Optional[float] = 0.0
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-    # name: Optional[str] = None
-    # function_call: Optional[object] = None
 
 
 class ChatCompletionChoiceResponse(BaseModel):
@@ -240,7 +250,7 @@ class ChatCompletionChoiceResponse(BaseModel):
 
 
 class ChatCompletionResponse(BaseModel):
-    id: Optional[str] = None
+    id: Optional[str] = Field(default_factory=lambda: f"chatcmpl-{shortuuid.random()}")
     model: str
     object: ModelFunctionEnum = ModelFunctionEnum.chat_completion
     created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))

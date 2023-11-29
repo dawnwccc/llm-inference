@@ -15,9 +15,13 @@ class OpenAICompletionObjectEnum(Enum):
 
 
 class CompletionFinishReasonEnum(Enum):
-    stop = "stop"
-    length = "length"
-    interrupt = "interrupt"
+    stop: str = "stop"
+    length: str = "length"
+    interrupt: str = "interrupt"
+    time: str = "time"
+
+    def __len__(self):
+        return len(self.value)
 
 
 class HTTPStatusCode(Enum):

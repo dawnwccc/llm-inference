@@ -1,12 +1,18 @@
 import logging
+from argparse import ArgumentParser
 from datetime import datetime
-from threading import Thread
-from utils.logger import Logger
+from typing import Dict, Any, Union, List
+
+from fastapi.exceptions import RequestValidationError
+from serve.utils.util import get_real_ip, check_crawler
+from serve.entity.exception import GlobalException, global_exception_handler, request_validation_exception_handler, \
+    exception_handler
+from serve.utils.logger import Logger
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import uvicorn
-from protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, BaseResponse
+from serve.entity.protocol.api_protocol import ModelRegisterRequest, ModelHeartBeatRequest, BaseResponse
 from config import ServerConfig
 
 
@@ -29,8 +35,9 @@ class LLMServerCenter:
         self.scheduler = BackgroundScheduler()
         self.session_list = {}
         self.max_heartbeat_interval = 3 * ServerConfig.MAX_HEARTBEAT_FAILURES * ServerConfig.HEARTBEAT_RATE * 1000
+        self.headers = {"Content-Type": "application/json"}
 
-    def run(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8000, log_level=logging.WARNING):
+    def run(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8000, log_level=logging.DEBUG):
         # 开始定时器
         self.scheduler.add_job(self.check_heartbeat, "interval", seconds=ServerConfig.HEARTBEAT_RATE)
         self.scheduler.start()
@@ -41,6 +48,9 @@ class LLMServerCenter:
         app.add_api_route(path=ServerConfig.HEARTBEAT_URL,
                           endpoint=self.receive_heartbeat_request,
                           methods=["POST"])
+        app.add_exception_handler(GlobalException, global_exception_handler(self.logger))
+        app.add_exception_handler(RequestValidationError, request_validation_exception_handler(self.logger))
+        self.logger.info(f"run server center at {host}:{port}")
         uvicorn.run(app=app, host=host, port=port, log_level=log_level)
 
     def receive_register_request(self, request: ModelRegisterRequest):
@@ -81,133 +91,54 @@ class LLMServerCenter:
             model_list.append(server_info)
         return model_list
 
-    # def _kill_session(self, model_url, model_func, session_id: Union[str, List[str]]):
-    #     try:
-    #         response = httpx.post(url=f"{model_url}/kill_session", json={
-    #             "session_id": session_id,
-    #             "model_func": model_func
-    #         }, timeout=Config.timeout)
-    #         response.raise_for_status()
-    #         self.logger.info(f"session: {session_id} is killed successfully.")
-    #         return [session_id] if isinstance(session_id, str) else session_id
-    #     except Exception as e:
-    #         self.logger.error(f"session: {session_id} is not killed. reason: {e}, retry: {session_id}")
-    #         return []
-    #
-    # def kill_session(self, session_id: Union[str, List[str]]):
-    #     session_id = session_id
-    #     success_session_id_list = []
-    #     if isinstance(session_id, str):
-    #         if session_id not in self.session_list.keys():
-    #             return LLMServerResponse().success().set_message(f"{session_id} has been killed.")
-    #         model_name, model_func = self.session_list.get(session_id)
-    #         if model_name not in self.model_list.keys():
-    #             self.session_list.pop(session_id)
-    #             return LLMServerResponse().success().set_message(f"{session_id} has been killed.")
-    #         model_info = self.model_list.get(model_name)
-    #         model_url = model_info.get("model_url")
-    #         success_session_id_list = self._kill_session(model_url, model_func, session_id)
-    #     else:
-    #         # isinstance(session_id, Iterable)
-    #         model2id = {}
-    #         for sid, session_info in self.session_list.items():
-    #             if sid in session_id:
-    #                 model_session_list = model2id.get(session_info, [])
-    #                 model_session_list.append(sid)
-    #             model2id[session_info] = model_session_list
-    #         for (model_name, model_func), sid_list in model2id.items():
-    #             if model_name not in self.model_list.keys():
-    #                 for sid in sid_list:
-    #                     self.session_list.pop(sid)
-    #             model_info = self.model_list.get(model_name)
-    #             model_url = model_info.get("model_url")
-    #             success_session_list = self._kill_session(model_url, model_func, session_id)
-    #             success_session_id_list.extend(success_session_list)
-    #     return LLMServerResponse().success().set_message(f"session: {success_session_id_list} be killed successfully.")
-    #
-    # def generate(self, model_name, model_kwargs, session_id):
-    #     if model_name not in self.model_list.keys():
-    #         return (LLMServerResponse().error()
-    #                 .set_message(f"{model_name} is not available."))
-    #     model_info = self.model_list.get(model_name)
-    #     model_url = model_info.get("model_url")
-    #     if "generate" not in model_info["model_inference"]:
-    #         return LLMServerResponse().error().set_message(f"{model_name} is not support generate.")
-    #     self.session_list[session_id] = (model_name, "generate")
-    #     try:
-    #         model_kwargs["session_id"] = session_id
-    #         response = httpx.post(url=f"{model_url}/generate", json=model_kwargs, timeout=Config.timeout)
-    #         response.raise_for_status()
-    #         self.logger.info(
-    #             f"session: {session_id} {model_name} generate {model_kwargs} -> {response.json()}")
-    #         self.session_list.pop(session_id)
-    #         return response.json()
-    #     except Exception as e:
-    #         self.logger.error(
-    #             f"session: {session_id} {model_name} generate failure, model_kwargs: {model_kwargs}, reason: {e}")
-    #         self.session_list.pop(session_id)
-    #         return LLMServerResponse().error().set_message(
-    #             f"session: {session_id} {model_name} generate failure, model_kwargs: {model_kwargs}, reason: {e}")
-    #
-    # def embedding(self, model_name, model_kwargs, session_id):
-    #     if model_name not in self.model_list.keys():
-    #         return (LLMServerResponse().error()
-    #                 .set_message(f"{model_name} is not available."))
-    #     model_info = self.model_list.get(model_name)
-    #     model_url = model_info.get("model_url")
-    #     if "embeddings" not in model_info["model_inference"]:
-    #         return LLMServerResponse().error().set_message(f"{model_name} is not support embeddings.")
-    #     self.session_list[session_id] = (model_name, "embedding")
-    #     try:
-    #         response = httpx.post(url=f"{model_url}/embeddings", json=model_kwargs, timeout=Config.timeout)
-    #         response.raise_for_status()
-    #         self.logger.info(f"{model_name} embeddings {model_kwargs} -> {response.json()}")
-    #         self.session_list.pop(session_id)
-    #         return response.json()
-    #     except Exception as e:
-    #         self.logger.error(
-    #             f"session: {session_id} {model_name} embeddings failure, model_kwargs: {model_kwargs}, reason: {e}")
-    #         self.session_list.pop(session_id)
-    #         return LLMServerResponse().error().set_message(
-    #             f"session: {session_id} {model_name} embeddings failure, model_kwargs: {model_kwargs}, reason: {e}")
-    #
-    # def run(self, app, host="127.0.0.1", port=8000, reload=False, workers=1):
-    #     # 初始化并执行定时器
-    #     self._scheduler_thread = Thread(target=self.__init_schedule)
-    #     # 设为守护线程，主线程结束则该线程也会结束
-    #     self._scheduler_thread.daemon = True
-    #     self._scheduler_thread.start()
-    #     # 启动FastAPI
-    #     uvicorn.run(app=app, host=host, port=port, reload=reload, workers=workers)
-    #
-    # def __init_schedule(self):
-    #     self._scheduler.add_job(self.__send_heart_beat, "interval", seconds=self.config.heart_beat_second)
-    #     self._scheduler.start()
-    #
-    # def __send_heart_beat(self):
-    #     for model_name, model_info in copy.deepcopy(self.model_list).items():
-    #         try:
-    #             response = httpx.get(url=model_info["model_url"] + self.config.heart_beat_url, timeout=Config.timeout)
-    #             response.raise_for_status()
-    #             if response.json().get("state", False):
-    #                 self.model_list[model_name]["failure_count"] = 0
-    #                 # self.logger.info(f"{model_name} send heart beat success")
-    #             else:
-    #                 if model_info["failure_count"] >= self.config.heart_beat_failure_max_count:
-    #                     self.model_list.pop(model_name)
-    #                     self.logger.error(
-    #                         f"{model_name} send heart beat failure, will be removed, current models: {list(self.model_list.keys())}. reason: {e}")
-    #                     continue
-    #                 self.model_list[model_name]["failure_count"] += 1
-    #                 self.logger.info(f"{model_name} send heart beat failure")
-    #         except Exception as e:
-    #             if model_info["failure_count"] >= self.config.heart_beat_failure_max_count:
-    #                 self.model_list.pop(model_name)
-    #                 self.logger.error(
-    #                     f"{model_name} send heart beat failure, will be removed, current models: {list(self.model_list.keys())}. reason: {e}")
-    #                 continue
-    #             self.model_list[model_name]["failure_count"] += 1
-    #             self.logger.error(f"{model_name} send heart beat failure. reason: {e}")
+    def check_request(self, params: Dict[str, Any]):
+        model = params.get("model", None)
+        if model is None:
+            raise GlobalException("model is required.", extra=str(params))
+        if model not in self.server_list:
+            raise GlobalException(message=f"model {model} is not available", extra=str(params))
+        if self.server_list[model]["state"] == "offline":
+            raise GlobalException(message=f"model {model} is offline", extra=str(params))
+
+    @exception_handler
+    async def completions(self, params: Dict[str, Any]):
+        self.check_request(params)
+        model = params.get("model")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
+                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT,
+                                         headers=self.headers)
+            response.raise_for_status()
+        self.logger.info(f"IP:{params['ip']} request completions.")
+        return response.json()
+
+    @exception_handler
+    async def chat_completions(self, params: Dict[str, Any]):
+        self.check_request(params)
+        model = params.get("model")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
+                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT,
+                                         headers=self.headers)
+            response.raise_for_status()
+        self.logger.info(f"IP:{params['ip']} request chat completions.")
+        return response.json()
+
+    @exception_handler
+    async def send_kill_signal(self, model: str, session_id: Union[str, List[str]]):
+        if model not in self.server_list:
+            raise GlobalException(f"model {model} can't be killed.", extra=str({
+                "model": model,
+                "session": session_id
+            }))
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=f"{self.server_list[model]['server_url']}{ServerConfig.KILL_SIGNAL_URL}",
+                                         json={
+                                             "model": model,
+                                             "session_id": session_id
+                                         }, timeout=ServerConfig.SESSION_TIMEOUT,
+                                         headers=self.headers)
+        return response.json()
 
 
 app = FastAPI()
@@ -225,28 +156,59 @@ def get_model_status():
     return BaseResponse().success().set_data("models", model_list)
 
 
-#
-#
-# @app.post(Config.register_url)
-# def register(request: LLMServiceCenterRegisterRequest):
-#     server.logger.info(f"register {request.dict()}")
-#     server.register_model(request.model_name, request.dict())
-#     return LLMServiceCenterHeartBeatResponse(state=True)
-#
-#
-# @app.post("/generate")
-# def generate(request: LLMServiceCenterRequest):
-#     return server.generate(request.model_name, request.model_kwargs, request.session_id)
-#
-#
-# @app.post("/embeddings")
-# def embeddings(request: LLMServiceCenterRequest):
-#     return server.embedding(request.model_name, request.model_kwargs, request.session_id)
-#
-#
-# @app.post("/kill_session")
-# def kill_session(request: LLMServiceKillSessionRequest):
-#     return server.kill_session(request.session_id)
+@app.post("/v0/completions")
+async def completions_0(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
+    params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
+    return await server.completions(params)
+
+
+@app.post("/v0/chat/completions")
+async def chat_completions_0(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
+    params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
+    return await server.chat_completions(params)
+
+
+@app.post("/v1/completions")
+async def completions_1(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
+    params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
+    response = await server.completions(params)
+    response = BaseResponse(**response)
+    return response.data
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions_1(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
+    params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
+    response = await server.chat_completions(params)
+    response = BaseResponse(**response)
+    return response.data
+
+
+@app.post(ServerConfig.KILL_SIGNAL_URL)
+async def kill_completion(request: Request):
+    if check_crawler(request):
+        return BaseResponse().success()
+    params: dict = await request.json()
+    params["ip"] = get_real_ip(request)
+    model = params.get("model", None)
+    session_id = params.get("session_id", None)
+    if model is None:
+        return BaseResponse().error().set_message("model is required.")
+    if session_id is None:
+        return BaseResponse().error().set_message("session_id is required.")
+    return await server.send_kill_signal(model, session_id)
 
 
 if __name__ == "__main__":

@@ -1,17 +1,24 @@
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+from typing import Tuple
+from torchinfo import summary
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, PreTrainedTokenizer, PreTrainedModel
 from config import ServerConfig
 import os
 from abc import abstractmethod
-from utils.factory import GlobalFactory, register_model_adapter
+
+from serve.models.base_model import AbstractModelFunction
+from serve.utils.factory import GlobalFactory, register_model_adapter
 
 
-def load_model(model_name_or_path: str, device, **from_pretrained_kwargs):
+def load_model(
+        model_name_or_path: str, device, **from_pretrained_kwargs
+    ) -> Tuple[PreTrainedTokenizer, PreTrainedModel, AbstractModelFunction]:
     debug = from_pretrained_kwargs.pop("debug", False)
     tokenizer, model = (GlobalFactory.
                         get_model_adapter(model_name_or_path).
                         load_model(model_name_or_path, device, **from_pretrained_kwargs))
     model_function = GlobalFactory.get_model_function(model_name_or_path)
     if debug:
+        # summary(model)
         print(model)
     return tokenizer, model, model_function
 
@@ -24,7 +31,7 @@ class ModelAdapter:
         pass
 
 
-@register_model_adapter("default")
+# @register_model_adapter("default")
 class DefaultModelAdapter(ModelAdapter):
     """默认模型适配器"""
 
@@ -67,7 +74,7 @@ class DefaultModelAdapter(ModelAdapter):
         return tokenizer, model
 
 
-@register_model_adapter("chatglm")
+# @register_model_adapter("chatglm")
 class ChatGLModelAdapter(ModelAdapter):
 
     @classmethod

@@ -112,22 +112,22 @@ class Logger:
             case self._CHAT_COMPLETION:
                 self.cmpl_logger.completion(message, date=self.date, prefix=self._CHAT_COMPLETION)
 
-    def info(self, message):
+    def info(self, message: str):
         self._log(message, self._INFO)
 
-    def debug(self, message):
+    def debug(self, message: str):
         self._log(message, self._DEBUG)
 
-    def warning(self, message):
+    def warning(self, message: str):
         self._log(message, self._WARNING)
 
-    def error(self, message):
+    def error(self, message: str):
         self._log(message, self._ERROR)
 
-    def text_completion(self, message):
+    def text_completion(self, message: str):
         self._log(message, self._TEXT_COMPLETION)
 
-    def chat_completion(self, message):
+    def chat_completion(self, message: str):
         self._log(message, self._CHAT_COMPLETION)
 
 
@@ -147,9 +147,9 @@ class CompletionLogger:
         try:
             for old_filepath, old_message in copy.deepcopy(self.cache):
                 with open(old_filepath, mode="a", encoding="utf-8") as f:
-                    f.write(json.dumps(old_message))
+                    f.write(old_message+"\n")
                 self.cache.remove((old_filepath, old_message))
             with open(filepath, mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(message)+"\n")
+                f.write(message+"\n")
         except OSError or IOError:
             self.cache.append((filepath, message))
