@@ -73,18 +73,18 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
         # 是否打印提示词
         echo = params.echo
         max_length = batch_input_ids.shape[1] + max_new_tokens if echo else max_new_tokens
-        stop_token_ids = [torch.as_tensor([token_ids]) for token_ids in params.stop_token_ids]
+        stop_token_ids = [torch.as_tensor([token_ids], device=device) for token_ids in params.stop_token_ids]
         if self.tokenizer.eos_token_id not in params.stop_token_ids:
-            stop_token_ids.append(torch.as_tensor([self.tokenizer.eos_token_id]))
+            stop_token_ids.append(torch.as_tensor([self.tokenizer.eos_token_id], device=device))
         if self.tokenizer.get_command("<|user|>") not in params.stop_token_ids:
-            stop_token_ids.append(torch.as_tensor([self.tokenizer.get_command("<|user|>")]))
+            stop_token_ids.append(torch.as_tensor([self.tokenizer.get_command("<|user|>")], device=device))
         for stop_str in stop_str_list:
             stop_token_ids.append(self.tokenizer(stop_str, return_tensors="pt").input_ids[0].to(device))
         # 批量任务处理
         task_total = len(batch_input_ids)
         batch_input_ids_length = [sum(attn_mask.tolist()) for attn_mask in attention_mask]
         batch_output_ids = [input_ids for input_ids in batch_input_ids] if echo else \
-            [torch.tensor([], dtype=torch.int32) for _ in range(task_total)]
+            [torch.tensor([], dtype=torch.int32, device=device) for _ in range(task_total)]
         batch_output = prompts if echo else [""] * task_total
         # 是否输出logprobs
         logprobs = params.logprobs
