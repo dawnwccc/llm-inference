@@ -9,7 +9,6 @@ from typing import List, Literal, Dict, Any, Union, Set
 
 from apscheduler.schedulers.base import BaseScheduler
 from fastapi.exceptions import RequestValidationError, HTTPException
-from pydantic import ValidationError
 from transformers import PreTrainedTokenizer, PreTrainedModel
 
 from serve.entity.exception import GlobalException, global_exception_handler, \
