@@ -113,8 +113,7 @@ class BaseModelServer:
             # else:
             #     self.logger.error(f"{self.model_name} register failure. message: {response.json()['message']}")
         except Exception as e:
-            if self.register_flag:
-                self.logger.error(f"{self.model_name} register failure. reason: {e}")
+            self.logger.error(f"{self.model_name} register failure. reason: {e}")
             # time.sleep(3 * ServerConfig.HEARTBEAT_RATE)
 
     def init_register_and_heartbeat(self):
