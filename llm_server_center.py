@@ -66,9 +66,11 @@ class LLMServerCenter:
 
     def check_heartbeat(self):
         for server_name, server_info in self.server_list.items():
-            if int(datetime.now().timestamp() * 1000) - server_info["update_time"] > self.max_heartbeat_interval:
-                server_info["state"] = "offline"
-                self.logger.warning(f"{server_name} is offline.")
+            if server_info["state"] == "online":
+                if (server_info["state"] == "online" and
+                        (int(datetime.now().timestamp() * 1000) - server_info["update_time"] > self.max_heartbeat_interval)):
+                    server_info["state"] = "offline"
+                    self.logger.warning(f"{server_name} is offline.")
 
     def receive_heartbeat_request(self, request: ModelHeartBeatRequest):
         if not request.id.startswith("hb"):
@@ -104,11 +106,15 @@ class LLMServerCenter:
     async def completions(self, params: Dict[str, Any]):
         self.check_request(params)
         model = params.get("model")
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
-                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT,
-                                         headers=self.headers)
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/completions",
+                                             json=params, timeout=ServerConfig.SESSION_TIMEOUT,
+                                             headers=self.headers)
+                response.raise_for_status()
+        except Exception as e:
+            self.logger.info(f"IP:{params['ip']} request completions error. reason: {e}")
+            raise GlobalException(message="request completions error.", extra=params)
         self.logger.info(f"IP:{params['ip']} request completions.")
         return response.json()
 
@@ -116,11 +122,15 @@ class LLMServerCenter:
     async def chat_completions(self, params: Dict[str, Any]):
         self.check_request(params)
         model = params.get("model")
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
-                                         json=params, timeout=ServerConfig.SESSION_TIMEOUT,
-                                         headers=self.headers)
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url=f"{self.server_list[model]['server_url']}/v1/chat/completions",
+                                             json=params, timeout=ServerConfig.SESSION_TIMEOUT,
+                                             headers=self.headers)
+                response.raise_for_status()
+        except Exception as e:
+            self.logger.info(f"IP:{params['ip']} request chat completions error. reason: {e}")
+            raise GlobalException(message="request chat completions error.", extra=params)
         self.logger.info(f"IP:{params['ip']} request chat completions.")
         return response.json()
 

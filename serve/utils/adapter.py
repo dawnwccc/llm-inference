@@ -19,6 +19,7 @@ def load_model(
     model_function = GlobalFactory.get_model_function(model_name_or_path)
     if debug:
         # summary(model)
+        print(tokenizer)
         print(model)
     return tokenizer, model, model_function
 

@@ -1,7 +1,7 @@
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
+    base_url="http://172.18.101.28:5901/v1",
     api_key="None",
 )
 response1 = client.chat.completions.create(

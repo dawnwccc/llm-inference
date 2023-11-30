@@ -11,7 +11,7 @@ def batch_pack(prompt: Union[str, List[str]], n: int = 1):
         prompt_packed = list(prompt for _ in range(n))
     else:
         for p in prompt:
-            prompt_packed.append(p for _ in range(n))
+            prompt_packed.extend(list(p for _ in range(n)))
     return prompt_packed
 
 
