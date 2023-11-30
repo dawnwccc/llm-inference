@@ -55,7 +55,7 @@ class BaseModelServer:
         self.model_function: AbstractModelFunction = None
         # 注册模型所需信息
         self.register_flag: bool = False
-        self.client: httpx.AsyncClient = None
+        self.client: httpx.Client = None
         self.center_url: str = f"http://{ServerConfig.SERVER_CENTER_URL}:{ServerConfig.SERVER_CENTER_PORT}"
         self.model_url: str = None
         # 定时器
@@ -67,14 +67,14 @@ class BaseModelServer:
         self.sessions_to_kill: Set[str] = set()
         self.sessions: Set[str] = set()
 
-    async def send_heartbeat(self):
+    def send_heartbeat(self):
         try:
             heartbeat_data = ModelHeartBeatRequest(
                 id=f"hb-{shortuuid.uuid()}",
                 ip=self.model_url.split(":")[0],
                 server_name=self.model_name
             ).parse2dict()
-            response = await self.client.post(f"{ServerConfig.HEARTBEAT_URL}", json=heartbeat_data)
+            response = self.client.post(f"{ServerConfig.HEARTBEAT_URL}", json=heartbeat_data)
             response.raise_for_status()
             if response.json().get("state", False):
                 # 心跳成功
@@ -94,7 +94,7 @@ class BaseModelServer:
                 self.logger.error(f"{self.model_name} has been exceeded maximum "
                                   f"{ServerConfig.MAX_HEARTBEAT_FAILURES} retries")
 
-    async def register_model(self):
+    def register_model(self):
         try:
             register_data = ModelRegisterRequest(
                 id=f"reg-{shortuuid.uuid()}",
@@ -103,7 +103,7 @@ class BaseModelServer:
                 server_url=self.model_url,
                 server_function=self.MODEL_FUNCTION
             ).parse2dict()
-            response = await self.client.post(f"http://{ServerConfig.REGISTER_URL}", json=register_data)
+            response = self.client.post(f"http://{ServerConfig.REGISTER_URL}", json=register_data)
             response.raise_for_status()
             if response.json().get("state", False):
                 # 启动心跳
@@ -118,24 +118,25 @@ class BaseModelServer:
 
     def init_register_and_heartbeat(self):
         if self.register_flag:
-            asyncio.run(self.send_heartbeat())
+            self.send_heartbeat()
         else:
-            asyncio.run(self.register_model())
+            self.register_model()
 
     def run(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8001, log_level=logging.DEBUG):
         self.load_model()
         self.model_url = f"http://{host}:{port}"
-        self.client = httpx.AsyncClient(base_url=self.center_url,
-                                        headers={
-                                            "Content-Type": "application/json"
-                                        })
+        self.client = httpx.Client(base_url=self.center_url,
+                                   headers={
+                                       "Content-Type": "application/json"
+                                   },
+                                   timeout=ServerConfig.SESSION_TIMEOUT)
         self.heartbeat_scheduler.add_job(self.init_register_and_heartbeat, "interval",
                                          max_instances=1,
                                          seconds=ServerConfig.HEARTBEAT_RATE),
-        # scheduler_thread = threading.Thread(target=self.heartbeat_scheduler.start)
-        # scheduler_thread.daemon = True
-        # scheduler_thread.start()
-        self.heartbeat_scheduler.start()
+        scheduler_thread = threading.Thread(target=self.heartbeat_scheduler.start)
+        scheduler_thread.daemon = True
+        scheduler_thread.start()
+        # self.heartbeat_scheduler.start()
         app.add_api_route(path=ServerConfig.KILL_SIGNAL_URL,
                           endpoint=self.receive_kill_signal,
                           methods=["POST"])

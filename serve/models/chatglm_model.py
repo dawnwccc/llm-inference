@@ -83,8 +83,8 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
         # 批量任务处理
         task_total = len(batch_input_ids)
         batch_input_ids_length = [sum(attn_mask.tolist()) for attn_mask in attention_mask]
-        batch_output_ids = [input_ids for input_ids in batch_input_ids] if echo else \
-            [torch.tensor([], dtype=torch.int32, device=device) for _ in range(task_total)]
+        batch_output_ids = batch_input_ids if echo else (
+            torch.tensor([[] for _ in range(task_total)], dtype=torch.int32, device=device))
         batch_output = prompts if echo else [""] * task_total
         # 是否输出logprobs
         logprobs = params.logprobs
@@ -161,13 +161,10 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                         batch_logprobs[i]["top_logprobs"].append(top_logprobs)
 
             if logits_processor:
-                last_token_logits = [
-                    logits_processor(
-                        torch.as_tensor(batch_output_ids[i], device=logits.device).long(),
-                        raw_last_logits[i, :])
-                    for i in range(task_total)
-                ]
-                last_token_logits = torch.stack(last_token_logits).to(device)
+                last_token_logits = logits_processor(
+                        torch.as_tensor(batch_output_ids, device=logits.device).long(),
+                        raw_last_logits
+                )
             else:
                 last_token_logits = raw_last_logits
 
@@ -199,18 +196,28 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     probs = torch.softmax(last_token_logits, dim=-1)
                     next_tokens_ids = torch.multinomial(probs, num_samples=1)
 
+            batch_output_ids = torch.cat((batch_output_ids, next_tokens_ids), dim=-1)
             for i in range(task_total):
                 if not running_state[i]:
                     continue
                 token_index[i] += 1
-                batch_output_ids[i] = torch.cat((batch_output_ids[i], next_tokens_ids[i, :]), dim=-1)
+            next_tokens_ids.to(device)
+            new_mask = torch.tensor(running_state, dtype=torch.int8).unsqueeze(1).to(device)
+            attention_mask = torch.cat([attention_mask, new_mask], dim=1)
+            # attention_mask = new_mask
+            if position_ids is not None:
+                position_ids = position_ids[:, -1:].clone() + 1
+
             if index % stream_interval == 0 or not all(running_state):
                 for i in range(task_total):
                     if not running_state[i] and index != 0:
                         continue
-                    message = stopping_criteria(batch_output_ids[i], last_token_logits)
-                    # 必须放在 stopping_criteria 之后，因为在该方法中会修改output_ids
-                    output_tokens_str = self.tokenizer.batch_decode(batch_output_ids[i])
+                    message = stopping_criteria(batch_output_ids[i], last_token_logits,
+                                                attention_mask=attention_mask[i])
+                    print(batch_output_ids[i])
+                    output_ids = torch.masked_select(batch_output_ids[i], attention_mask[i].bool())
+                    print(output_ids)
+                    output_tokens_str = self.tokenizer.batch_decode(output_ids)
                     output_tokens_flag = [
                         not (s in self.tokenizer.tokenizer.special_tokens)
                         for s in output_tokens_str
@@ -221,7 +228,12 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                         if flag
                     ]
                     # batch_output[i] = "".join(output_tokens_str)
-                    batch_output[i] = self.tokenizer.decode(batch_output_ids[i])
+                    batch_output[i] = self.tokenizer.decode(
+                        output_ids,
+                        skip_special_tokens=True,
+                        spaces_between_special_tokens=False,
+                        clean_up_tokenization_spaces=True,
+                    )
                     if message.stop:
                         running_state[i] = False
                         finish_reason[i] = message.message
@@ -261,12 +273,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                 )
                 yield response
                 is_interrupted = response.interrupted
-            next_tokens_ids.to(device)
-            new_mask = torch.tensor(running_state, dtype=torch.int8).unsqueeze(1).to(device)
-            attention_mask = torch.cat([attention_mask, new_mask], dim=1)
-            # attention_mask = new_mask
-            if position_ids is not None:
-                position_ids = position_ids[:, -1:].clone() + 1
+
             index += 1
 
         del past_key_values, out, input_ids, attention_mask, position_ids

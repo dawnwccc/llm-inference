@@ -128,8 +128,8 @@ class DefaultModelFunction(AbstractModelFunction):
         # 批量任务处理
         task_total = len(batch_input_ids)
         batch_input_ids_length = [sum(attn_mask.tolist()) for attn_mask in attention_mask]
-        batch_output_ids = [input_ids for input_ids in batch_input_ids] if echo else \
-            [torch.tensor([], dtype=torch.int32) for _ in range(task_total)]
+        batch_output_ids = batch_input_ids if echo else (
+            torch.tensor([[] for _ in range(task_total)], dtype=torch.int32, device=device))
         batch_output = prompts if echo else [""] * task_total
         # 是否输出logprobs
         logprobs = params.logprobs
@@ -176,6 +176,9 @@ class DefaultModelFunction(AbstractModelFunction):
         finish_reason = [""] * task_total
         is_interrupted = False
         index = 0
+
+        # llama2
+        special_tokens = self.tokenizer.all_special_tokens
 
         while (echo and is_logprobs and index == 0) or (any(running_state) and not is_interrupted):
             if index == 0:
@@ -232,13 +235,10 @@ class DefaultModelFunction(AbstractModelFunction):
                         batch_logprobs[i]["top_logprobs"].append(top_logprobs)
 
             if logits_processor:
-                last_token_logits = [
-                    logits_processor(
-                        torch.as_tensor(batch_output_ids[i], device=logits.device).long(),
-                        raw_last_logits[i, :])
-                    for i in range(task_total)
-                ]
-                last_token_logits = torch.stack(last_token_logits).to(device)
+                last_token_logits = logits_processor(
+                    torch.as_tensor(batch_output_ids, device=logits.device).long(),
+                    raw_last_logits
+                )
             else:
                 last_token_logits = raw_last_logits
 
@@ -270,11 +270,11 @@ class DefaultModelFunction(AbstractModelFunction):
                     probs = torch.softmax(last_token_logits, dim=-1)
                     next_tokens_ids = torch.multinomial(probs, num_samples=1)
 
+            batch_output_ids = torch.cat((batch_output_ids, next_tokens_ids), dim=-1)
             for i in range(task_total):
                 if not running_state[i]:
                     continue
                 token_index[i] += 1
-                batch_output_ids[i] = torch.cat((batch_output_ids[i], next_tokens_ids[i, :]), dim=-1)
 
             if index % stream_interval == 0 or not all(running_state):
                 for i in range(task_total):
@@ -282,14 +282,9 @@ class DefaultModelFunction(AbstractModelFunction):
                         continue
                     message = stopping_criteria(batch_output_ids[i], last_token_logits)
                     # 必须放在 stopping_criteria 之后，因为在该方法中会修改output_ids
-                    output_tokens_str = self.tokenizer.batch_decode(
-                        batch_output_ids[i],
-                        skip_special_tokens=True,
-                        spaces_between_special_tokens=False,
-                        clean_up_tokenization_spaces=True,
-                    )
+                    output_tokens_str = self.tokenizer.batch_decode(batch_output_ids[i])
                     output_tokens_flag = [
-                        not (s in self.tokenizer.special_tokens)
+                        not (s in special_tokens)
                         for s in output_tokens_str
                     ]
                     output_tokens_str = [
@@ -298,7 +293,12 @@ class DefaultModelFunction(AbstractModelFunction):
                         if flag
                     ]
                     # batch_output[i] = "".join(output_tokens_str)
-                    batch_output[i] = self.tokenizer.decode(batch_output_ids[i])
+                    batch_output[i] = self.tokenizer.decode(
+                        batch_output_ids[i],
+                        skip_special_tokens=True,
+                        spaces_between_special_tokens=False,
+                        clean_up_tokenization_spaces=True,
+                    )
                     if message.stop:
                         running_state[i] = False
                         finish_reason[i] = message.message
@@ -325,7 +325,8 @@ class DefaultModelFunction(AbstractModelFunction):
                     choices=[
                         CompletionChoiceResponse(
                             text=batch_output[i],
-                            logprobs=CompletionLogprobs(**batch_logprobs[i]) if not running_state[i] and is_logprobs else None,
+                            logprobs=CompletionLogprobs(**batch_logprobs[i]) if not running_state[
+                                i] and is_logprobs else None,
                             usage=CompletionUsageInfo(
                                 prompt_tokens=batch_input_ids_length[i],
                                 completion_tokens=token_index[i],

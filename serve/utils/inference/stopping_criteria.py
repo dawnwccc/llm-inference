@@ -38,7 +38,7 @@ class CustomStoppingCriteriaList:
             message=""
         )
         for criteria, message in zip(self._list, self._messages):
-            if criteria(input_ids, scores):
+            if criteria(input_ids, scores, **kwargs):
                 response.stop = True
                 response.message = message
                 return response
@@ -82,9 +82,8 @@ class StopIdsCriteria(StoppingCriteria):
                 return False
             pos = self._rfind(output_ids, tokens)
             if pos > 0:
-                new_input_ids = input_ids[:self.start_index+pos]
-                input_ids.resize_(len(new_input_ids))
-                input_ids.copy_(new_input_ids)
+                attention_mask = kwargs["attention_mask"]
+                attention_mask[:self.start_index+pos] = 1
                 return True
         return False
 

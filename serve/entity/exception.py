@@ -47,7 +47,9 @@ def global_exception_handler(logger):
             log += f" detail: {exp.extra}"
         logger.error(log)
         resp_str = BaseResponse().error().set_message(exp.message, exp.code).parse2json()
-        return Response(content=resp_str)
+        return Response(content=resp_str, headers={
+            "Content-Type": "application/json"
+        })
 
     return global_exception_handler_wrapper
 
