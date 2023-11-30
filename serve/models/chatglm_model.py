@@ -176,23 +176,20 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
         # 批量任务处理
         task_total = len(batch_input_ids)
         batch_input_ids_length = [sum(attn_mask.tolist()) for attn_mask in attention_mask]
-        batch_output_ids = batch_input_ids if echo else (
+        batch_temp_output_ids = batch_input_ids if echo else (
             torch.tensor([[] for _ in range(task_total)], dtype=torch.int32, device=device))
+        batch_final_output_ids = [None for _ in range(task_total)]
         batch_output = prompts if echo else [""] * task_total
         # 是否输出logprobs
         logprobs = params.logprobs
         is_logprobs = logprobs is not None
-        batch_temp_logprobs = [{
+        batch_logprobs = [{
             "text_offset": [],
             "tokens": [],
             "token_logprobs": [],
             "top_logprobs": []
         } for _ in range(task_total)]
-        batch_final_output_ids = [None for _ in range(task_total)]
-        batch_final_response_choices: List[Union[None, CompletionChoiceResponse]] = [
-            None
-            for _ in range(task_total)
-        ]
+        batch_final_response_choices = [None for _ in range(task_total)]
 
         if logits_processor is None:
             logits_processor = default_logits_processor(temperature, repetition_penalty, top_p)
@@ -242,7 +239,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     batch_raw_logprobs, dim=-1, index=batch_input_ids.unsqueeze(2)[:, 1:, :]
                 )
                 for i in range(task_total):
-                    batch_temp_logprobs[i]["token_logprobs"] = batch_prompt_tokens_probs[i, :batch_input_ids_length[i],
+                    batch_logprobs[i]["token_logprobs"] = batch_prompt_tokens_probs[i, :batch_input_ids_length[i],
                                                                0].tolist()
                     # 去掉第一个词和最后一个词
                     top_tokens = [
@@ -253,11 +250,11 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     top_tokens_logprobs = batch_top_tokens_logprobs[i, :batch_input_ids_length[i] - 1, :].tolist()
                     for toks, toks_logprobs in zip(top_tokens, top_tokens_logprobs):
                         top_logprobs = dict(zip(toks, toks_logprobs))
-                        batch_temp_logprobs[i]["top_logprobs"].append(top_logprobs)
+                        batch_logprobs[i]["top_logprobs"].append(top_logprobs)
 
             if logits_processor:
                 last_token_logits = logits_processor(
-                    torch.as_tensor(batch_output_ids, device=logits.device).long(),
+                    torch.as_tensor(batch_temp_output_ids, device=logits.device).long(),
                     raw_last_logits
                 )
             else:
@@ -279,11 +276,11 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                 batch_last_tokens_logprobs = torch.gather(batch_raw_last_logprobs, dim=-1, index=next_tokens_ids)
                 batch_top_tokens_logprobs = torch.gather(batch_raw_last_logprobs, dim=-1, index=batch_sample_output_ids)
                 for i in range(task_total):
-                    batch_temp_logprobs[i]["token_logprobs"].append(batch_last_tokens_logprobs[i, 0].tolist())
+                    batch_logprobs[i]["token_logprobs"].append(batch_last_tokens_logprobs[i, 0].tolist())
                     top_tokens = self.tokenizer.batch_decode(batch_sample_output_ids[i, :])
                     top_tokens_logprobs = batch_top_tokens_logprobs[i].tolist()
                     top_logprobs = dict(zip(top_tokens, top_tokens_logprobs))
-                    batch_temp_logprobs[i]["top_logprobs"].append(top_logprobs)
+                    batch_logprobs[i]["top_logprobs"].append(top_logprobs)
             else:
                 if temperature < 1e-5 or top_p < 1e-8:
                     next_tokens_ids = torch.argmax(last_token_logits, dim=-1).unsqueeze(1)
@@ -297,7 +294,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     # 停止生成
                     running_state[i] = False
                     finish_reason[i] = CompletionFinishReasonEnum.stop
-                    batch_final_output_ids[i] = batch_output_ids[i].tolist()
+                    batch_final_output_ids[i] = batch_temp_output_ids[i].tolist()
                 else:
                     token_index[i] += 1
 
@@ -308,9 +305,9 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                     if running_state[i]:
                         running_state[i] = False
                         finish_reason[i] = CompletionFinishReasonEnum.length
-                        batch_final_output_ids[i] = batch_output_ids[i].tolist()
+                        batch_final_output_ids[i] = batch_temp_output_ids[i].tolist()
             else:
-                batch_output_ids = torch.cat((batch_output_ids, next_tokens_ids), dim=-1)
+                batch_temp_output_ids = torch.cat((batch_temp_output_ids, next_tokens_ids), dim=-1)
 
             if index % stream_interval == 0 or not all(running_state):
                 for i in range(task_total):
@@ -319,7 +316,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                         continue
                     if running_state[i]:
                         # 任务仍在运行
-                        output_str = self.tokenizer.decode(batch_output_ids[i])
+                        output_str = self.tokenizer.decode(batch_temp_output_ids[i])
                         # 根据stop_str判断是否需要停止
                         is_stop, output_str = check_stop_str(
                             output_str, stop_str_list, check_start=prompts_length[i] if echo else 0)
@@ -329,6 +326,7 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                         batch_output[i] = output_str
                     else:
                         output_str = self.tokenizer.decode(batch_final_output_ids[i])
+                    batch_output[i] = output_str
 
                     if not running_state[i] and batch_final_response_choices[i] is None:
                         # 若已经结束但没有构建response，则构建
@@ -342,9 +340,6 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                                 not (s in special_tokens) and s
                                 for s in output_tokens_str
                             ]
-                            # if echo:
-                            #     # 去除第一个token，即prompt中的第一个token
-                            #     output_tokens_flag = output_tokens_flag[1:]
                             output_tokens_str = [
                                 token_str
                                 for flag, token_str in zip(output_tokens_flag, output_tokens_str)
@@ -353,16 +348,16 @@ class ChatGLM3ModelFunction(AbstractModelFunction):
                             # 计算logprobs: text_offset
                             output_tokens_str_length = [len(token_str) for flag, token_str in
                                                         zip(output_tokens_flag, output_tokens_str) if flag]
-                            batch_temp_logprobs[i]["tokens"] = output_tokens_str
-                            batch_temp_logprobs[i]["text_offset"] = [0] + list(accumulate(output_tokens_str_length))[:-1]
-                            batch_temp_logprobs[i]["token_logprobs"] = [
+                            batch_logprobs[i]["tokens"] = output_tokens_str
+                            batch_logprobs[i]["text_offset"] = [0] + list(accumulate(output_tokens_str_length))[:-1]
+                            batch_logprobs[i]["token_logprobs"] = [
                                 tok_logprobs
-                                for flag, tok_logprobs in zip(output_tokens_flag[1:], batch_temp_logprobs[i]["token_logprobs"][1:])
+                                for flag, tok_logprobs in zip(output_tokens_flag[1:], batch_logprobs[i]["token_logprobs"][1:])
                                 if flag
                             ]
-                            batch_temp_logprobs[i]["top_logprobs"] = [
+                            batch_logprobs[i]["top_logprobs"] = [
                                 top_logprobs
-                                for flag, top_logprobs in zip(output_tokens_flag[1:], batch_temp_logprobs[i]["top_logprobs"][1:])
+                                for flag, top_logprobs in zip(output_tokens_flag[1:], batch_logprobs[i]["top_logprobs"][1:])
                                 if flag
                             ]
                         batch_final_response_choices[i] = CompletionChoiceResponse(
