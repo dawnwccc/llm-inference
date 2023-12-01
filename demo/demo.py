@@ -1,6 +1,7 @@
 import requests
 
-base_url = "http://172.18.101.28:5901/v1"
+# example http://127.0.0.1:8001/v1
+base_url = "your server url"
 completion_endpoint = base_url + "/completions"
 chat_completion_endpoint = base_url + "/chat/completions"
 headers = {
