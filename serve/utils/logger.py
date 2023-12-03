@@ -1,7 +1,6 @@
 import logging
 import os
 import colorlog
-import json
 import copy
 from datetime import datetime
 

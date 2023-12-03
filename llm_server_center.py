@@ -1,5 +1,4 @@
 import logging
-from argparse import ArgumentParser
 from datetime import datetime
 from typing import Dict, Any, Union, List
 

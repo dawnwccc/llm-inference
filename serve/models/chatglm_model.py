@@ -1,23 +1,11 @@
-import gc
 import re
-import warnings
-from datetime import datetime
-from itertools import accumulate
-from typing import Union, List, Dict, Any, Callable
-import torch
-from transformers import LogitsProcessor, LogitsWarper, LogitsProcessorList
-
-from serve.entity.exception import GlobalException
+from typing import Union, List
 from serve.entity.inference import TempCompletionResponse, CompletionParams
-from serve.entity.protocol import CompletionChoiceResponse, CompletionUsageInfo, ChatMessage, CompletionLogprobs
+from serve.entity.protocol import ChatMessage
 from serve.utils.chat_template import ChatTemplate
-from serve.utils.factory import register_model_function
 from serve.utils.inference.batcher import batch_tokenize
-from serve.utils.inference.logits_processor import default_logits_processor
-from serve.utils.inference.stopping_criteria import check_stop_str, default_stopping_criteria
 from serve.models.base_model import DefaultModelFunction
 from serve.utils.inference.logits_processor import ChatGLMInvalidScoreLogitsProcessor
-from serve.utils.enums import CompletionFinishReasonEnum
 
 
 def chatglm_process_output(response):

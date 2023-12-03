@@ -6,7 +6,7 @@ import os
 from abc import abstractmethod
 
 from serve.models.base_model import AbstractModelFunction
-from serve.utils.factory import GlobalFactory, register_model_adapter
+from serve.utils.factory import GlobalFactory
 
 
 def load_model(

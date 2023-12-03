@@ -1,8 +1,8 @@
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Union
 
 import torch
 from pydantic import BaseModel
-from transformers import StoppingCriteriaList, add_start_docstrings, StoppingCriteria, MaxLengthCriteria, \
+from transformers import add_start_docstrings, StoppingCriteria, MaxLengthCriteria, \
     MaxTimeCriteria
 from transformers.generation.stopping_criteria import STOPPING_CRITERIA_INPUTS_DOCSTRING, MaxNewTokensCriteria
 

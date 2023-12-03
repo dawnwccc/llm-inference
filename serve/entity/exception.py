@@ -1,12 +1,10 @@
-import json
 from typing import Union
 import traceback
-from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import Response
-from serve.entity.protocol.api_protocol import BaseRequest, BaseResponse
+from serve.entity.protocol.api_protocol import BaseResponse
 from serve.utils.enums import HTTPStatusCode
 
 
