@@ -174,6 +174,7 @@ class DefaultModelFunction(AbstractModelFunction):
         # 记录每个任务的全部输入输出，用于输入到模型中
         batch_output_ids = batch_input_ids.clone().to(device) if echo else (
             torch.tensor([[] for _ in range(task_total)], dtype=torch.int32, device=device))
+        init_batch_output_ids_length = [len(ids) for ids in batch_output_ids]
         # 用于记录每个任务的输出文本
         batch_output = prompts if echo else [""] * task_total
         # 是否输出logprobs
@@ -334,7 +335,7 @@ class DefaultModelFunction(AbstractModelFunction):
                         # 若已经结束且已经生成则跳过
                         continue
                     batch_output[i] = self.tokenizer.decode(
-                        batch_output_ids[i][:token_index[i]],
+                        batch_output_ids[i][:token_index[i]+init_batch_output_ids_length[i]],
                         skip_special_tokens=True
                     )
                     # 根据stop_str判断是否需要停止
@@ -345,7 +346,7 @@ class DefaultModelFunction(AbstractModelFunction):
                         finish_reason[i] = CompletionFinishReasonEnum.stop
                     if not running_state[i] and is_logprobs:
                         # 若已经任务已经结束但没有构建构建output_str和logprobs
-                        output_tokens_str = self.tokenizer.batch_decode(batch_output_ids[i][:token_index[i]])
+                        output_tokens_str = self.tokenizer.batch_decode(batch_output_ids[i][:token_index[i]+init_batch_output_ids_length[i]])
                         output_tokens_flag = [
                             not (s in special_tokens) and s
                             for s in output_tokens_str
@@ -371,7 +372,6 @@ class DefaultModelFunction(AbstractModelFunction):
                             zip(output_tokens_flag[1:], batch_logprobs[i]["top_logprobs"][1:])
                             if flag
                         ]
-
                 response = TempCompletionResponse(
                     choices=[
                         CompletionChoiceResponse(

@@ -65,6 +65,7 @@ class ChatGLM3ModelFunction(DefaultModelFunction):
 
     def stream_completion(self, prompt: Union[str, List[str]], params: CompletionParams,
                           stream_interval: int = 2) -> TempCompletionResponse:
+        """流式补全"""
         device = self.device
         n = params.n
         prompts, (input_ids, attention_mask, position_ids) = batch_tokenize(
@@ -94,6 +95,7 @@ class ChatGLM3ModelFunction(DefaultModelFunction):
             self, chat_template: ChatTemplate, messages: List[ChatMessage], params: CompletionParams,
             stream_interval: int = 2
     ) -> TempCompletionResponse:
+        """对话流式补全"""
         n = params.n
         device = self.device
         conversation = chat_template.parse(messages)
